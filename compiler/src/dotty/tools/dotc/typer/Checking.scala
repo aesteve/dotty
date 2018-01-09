@@ -552,7 +552,7 @@ trait Checking {
         if (stablePrefixReq && ctx.phase <= ctx.refchecksPhase) checkStable(tref.prefix, pos)
         tp
       case _ =>
-        ctx.error(ex"$tp is not a class type", pos)
+        ctx.error(ClassExpected(tp), pos)
         defn.ObjectType
     }
 

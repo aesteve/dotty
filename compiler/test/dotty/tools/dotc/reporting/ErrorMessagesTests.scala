@@ -1294,4 +1294,20 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertEquals("method get", rsym.show)
       assertEquals("class Object", parentSym.show)
     }
+
+  @Test def classExpected =
+    checkMessagesAfter("frontend") {
+      """
+        | object Test {
+        |  type A
+        |  class B extends A {}
+        | }
+      """.stripMargin
+    }.expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+
+      assertMessageCount(1, messages)
+      val ClassExpected(tp) = messages.head
+      assertEquals("Test.A", tp.show)
+    }
 }
