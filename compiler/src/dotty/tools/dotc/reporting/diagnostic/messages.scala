@@ -2086,11 +2086,12 @@ object messages {
             | It may come from:
             |  - a type definition: ${"type StringToInt = Int => String"} ("any function converting an Int to a String"),
             |  - a structural type: ${"{def toInt: Int}"} ("any object providing a toInt method"),
-            |  - a type parameter: within the body of ${"def foo[T](t: T)"}, T is a type.
+            |  - a type parameter: within the body of ${"def foo[T](t: T)"}, T is a type
+            |  - ...
             |
             | On the other hand, a ${"class"} specifies how a set of objects works, is concretely implemented.
             |
-            | Several operations make sens for a ${"class"} but not for a ${"type"}, like instanciation or inheritance.
+            | Several operations make sense for a ${"class"} but not for a ${"type"}, like instantiation or inheritance.
             | You're trying to apply one of these operations to a ${"type"}.
             |
             | Note : Some types have an associated ${"class"} (like type ${"String => Int"} and class ${"Function[String, Int]"}).
