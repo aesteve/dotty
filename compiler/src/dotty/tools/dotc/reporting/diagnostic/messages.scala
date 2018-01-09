@@ -2074,4 +2074,28 @@ object messages {
           |$rsym does not override any method in $parentSym. Structural refinement does not allow for
           |polymorphic methods."""
   }
+
+  case class ClassExpected(tp: Type)(implicit ctx: Context) extends Message(ClassExpectedID) {
+    val kind = "Reference"
+    val msg = hl"Expected $tp to be a ${"class"}, not a ${tp.typeSymbol.showKind}"
+    val explanation =
+        hl"""
+            | $tp is a ${"type"}, not a ${"class"}.
+            |
+            | A ${"type"} defines formally how some portion of a program behaves, the set of properties or methods some object holds.
+            | It may come from:
+            |  - a type definition: ${"type StringToInt = Int => String"} ("any function converting an Int to a String"),
+            |  - a structural type: ${"{def toInt: Int}"} ("any object providing a toInt method"),
+            |  - a type parameter: within the body of ${"def foo[T](t: T)"}, T is a type
+            |  - ...
+            |
+            | On the other hand, a ${"class"} specifies how a set of objects works, is concretely implemented.
+            |
+            | Several operations make sense for a ${"class"} but not for a ${"type"}, like instantiation or inheritance.
+            | You're trying to apply one of these operations to a ${"type"}.
+            |
+            | Note : Some types have an associated ${"class"} (like type ${"String => Int"} and class ${"Function[String, Int]"}).
+            | Unfortunately in the case of $tp, there's no associated ${"class"}.
+          """.stripMargin
+  }
 }
