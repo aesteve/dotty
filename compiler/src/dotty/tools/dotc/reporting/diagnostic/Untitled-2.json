@@ -1,0 +1,27 @@
+{
+  "name": "init_rtstz1odb50",
+  "config": {
+    "name": "init_rtstz1odb50",
+    "connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+    "connection.url": "jdbc:oracle:thin:@rtstz1odb50.preprod.org:1531/tetrix02_rtstz1odb50.hosting.eu",
+    "connection.user": "stcom",
+    "connection.password": "unouragan",
+    "mode":"bulk",
+    "topic.prefix": "initmovementsodb50-",
+    "query":"select  a.tir_num_tiers_tir||'|'||FST_ARTICLE_R3||'|'||a.tys_type_stock_tys as \"key\",a.msk_date_ecriture as \"date\",  a.msk_id as \"id\", a.tir_num_tiers_tir as \"store\", cast(FST_ARTICLE_R3 as decimal(15,0)) as \"item\", a.tys_type_stock_tys as \"type\", a.nmv_code_nature_mouvement_nmv as \"nature\", cast(msk_quantite*NMV_SIGNE_IMPACT_STOCK as decimal(15,0)) as \"delta\", cast(a.msk_stock_avant_mvt + (msk_quantite*NMV_SIGNE_IMPACT_STOCK) as decimal(15,0)) as \"stock\", a.msk_prix_operation as \"cost\", a.dev_code_devise_prix_opera as \"currency\", a.msk_user as \"user\" from  stcom.mouvement_stock a inner join   masterdatas.flat_structure b on  a.elg_num_elt_gestion_elg = b.elg_num_elt_gestion_elg  inner join  stcom.nature_mouvement c on c.nmv_code_nature_mouvement = a.nmv_code_nature_mouvement_nmv where  msk_date_ecriture > to_timestamp('01/06/2019 00:00:00','DD/MM/YYYY HH24:MI:SS') and  msk_stock_avant_mvt is not null and tys_type_stock_tys is not null",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url":"http://smk-schema-registry:8081",
+    "numeric.mapping":"best_fit",
+    "transforms":"createKey,extractKeyAsString,removeKeyFromValue,changeTopicName",
+    "transforms.createKey.type":"org.apache.kafka.connect.transforms.ValueToKey",
+    "transforms.createKey.fields":"key",
+    "transforms.extractKeyAsString.type": "org.apache.kafka.connect.transforms.ExtractField$Key",
+    "transforms.extractKeyAsString.field": "key",
+    "transforms.removeKeyFromValue.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
+    "transforms.removeKeyFromValue.blacklist": "key",
+    "transforms.changeTopicName.type":"org.apache.kafka.connect.transforms.RegexRouter",
+    "transforms.changeTopicName.regex":".*",
+    "transforms.changeTopicName.replacement":"stockmovements",
+    "poll.interval.ms" : 7600000
+  }
+}
