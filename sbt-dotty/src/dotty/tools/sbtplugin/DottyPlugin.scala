@@ -34,7 +34,7 @@ object DottyPlugin extends AutoPlugin {
 
         // get latest nightly version from maven
         def fetchSource(version: String): (scala.io.BufferedSource, String) =
-          try Source.fromURL(s"http://repo1.maven.org/maven2/ch/epfl/lamp/dotty_$version/maven-metadata.xml") -> version
+          try Source.fromURL(s"https://repo1.maven.org/maven2/ch/epfl/lamp/dotty_$version/maven-metadata.xml") -> version
           catch { case t: java.io.FileNotFoundException =>
             val major :: minor :: Nil = version.split('.').toList
             if (minor.toInt <= 0) throw t
@@ -154,7 +154,7 @@ object DottyPlugin extends AutoPlugin {
   override val globalSettings: Seq[Def.Setting[_]] = Seq(
     onLoad in Global := onLoad.in(Global).value.andThen { state =>
 
-      val requiredVersion = ">=1.2.7"
+      val requiredVersion = ">=1.3.6"
 
       val sbtV = sbtVersion.value
       if (!VersionNumber(sbtV).matchesSemVer(SemanticSelector(requiredVersion)))
@@ -210,41 +210,42 @@ object DottyPlugin extends AutoPlugin {
           scalaBinaryVersion.value
       },
 
-      // Ideally, we should have:
+      // We want:
       //
       // 1. Nothing but the Java standard library on the _JVM_ bootclasspath
       //    (starting with Java 9 we cannot inspect it so we don't have a choice)
       //
-      // 2. scala-library, dotty-library, dotty-compiler, dotty-doc on the _JVM_
-      //    classpath, because we need all of those to actually run the compiler
-      //    and the doc tool.
+      // 2. scala-library, dotty-library, dotty-compiler and its dependencies on the _JVM_
+      //    classpath, because we need all of those to actually run the compiler.
       //    NOTE: All of those should have the *same version* (equal to scalaVersion
       //    for everything but scala-library).
+      //    (Complication: because dottydoc is a separate artifact with its own dependencies,
+      //     running it requires putting extra dependencies on the _JVM_ classpath)
       //
-      // 3. scala-library, dotty-library on the _compiler_ bootclasspath because
-      //    user code should always have access to the symbols from these jars but
-      //    should not be able to shadow them (the compiler bootclasspath has
-      //    higher priority than the compiler classpath).
+      // 3. scala-library, dotty-library on the _compiler_ bootclasspath or
+      //    classpath (the only difference between them is that the compiler
+      //    bootclasspath has higher priority, but that should never
+      //    make a difference in a sane environment).
       //    NOTE: the versions of {scala,dotty}-library used here do not necessarily
       //    match the one used in 2. because a dependency of the current project might
-      //    require more recent versions, this is OK.
+      //    require a more recent standard library version, this is OK
+      //    TODO: ... but if macros are used we might be forced to use the same
+      //    versions in the JVM and compiler classpaths to avoid problems, this
+      //    needs to be investigated.
       //
       // 4. every other dependency of the user project on the _compiler_
       //    classpath.
       //
-      // Unfortunately, zinc assumes that the compiler bootclasspath is only
-      // made of one jar (scala-library), so to make this work we'll need to
-      // either change sbt's bootclasspath handling or wait until the
-      // dotty-library jar and scala-library jars are merged into one jar.
-      // Furthermore, zinc will put on the compiler bootclasspath the
+      // By default, zinc will put on the compiler bootclasspath the
       // scala-library used on the JVM classpath, even if the current project
       // transitively depends on a newer scala-library (this works because Scala
       // 2 guarantees forward- and backward- binary compatibility, but we don't
       // necessarily want to keep doing that in Scala 3).
       // So for the moment, let's just put nothing at all on the compiler
-      // bootclasspath, and instead have scala-library and dotty-library on the
-      // compiler classpath. This means that user code could shadow symbols
-      // from these jars but we can live with that for now.
+      // bootclasspath, and instead let sbt dependency management choose which
+      // scala-library and dotty-library to put on the compiler classpath.
+      // Maybe eventually we should just remove the compiler bootclasspath since
+      // it's a source of complication with only dubious benefits.
 
       // sbt crazy scoping rules mean that when we override `classpathOptions`
       // below we also override `classpathOptions in console` which is normally
@@ -404,10 +405,15 @@ object DottyPlugin extends AutoPlugin {
 
   /** Create a scalaInstance task that uses Dotty based on `moduleName`. */
   def dottyScalaInstanceTask(moduleName: String): Initialize[Task[ScalaInstance]] = Def.task {
+    val ivyConfig0 = Classpaths.mkIvyConfiguration.value
+    // When compiling non-bootstrapped projects in the build of Dotty itself,
+    // dependency resolution might pick a local project which is not what we
+    // want. We avoid this by dropping the inter-project resolver.
+    val ivyConfig1 = ivyConfig0.withResolvers(ivyConfig0.resolvers.filter(_.name != "inter-project"))
     val updateReport =
       fetchArtifactsOf(
         scalaOrganization.value %% moduleName % scalaVersion.value,
-        dependencyResolution.value,
+        ivy.IvyDependencyResolution(ivyConfig1),
         scalaModuleInfo.value,
         updateConfiguration.value,
         (unresolvedWarningConfiguration in update).value,
@@ -431,18 +437,22 @@ object DottyPlugin extends AutoPlugin {
     )
   }
 
+  // Adapted from private mkScalaInstance in sbt
   def makeScalaInstance(
     state: State, dottyVersion: String, scalaLibrary: File, dottyLibrary: File, compiler: File, all: Seq[File]
   ): ScalaInstance = {
-    val loader = state.classLoaderCache(all.toList)
-    val loaderLibraryOnly = state.classLoaderCache(List(dottyLibrary, scalaLibrary))
+    val libraryLoader = state.classLoaderCache(List(dottyLibrary, scalaLibrary))
+    class DottyLoader
+        extends URLClassLoader(all.map(_.toURI.toURL).toArray, libraryLoader)
+    val fullLoader = state.classLoaderCache.cachedCustomClassloader(
+      all.toList,
+      () => new DottyLoader
+    )
     new ScalaInstance(
       dottyVersion,
-      loader,
-      loaderLibraryOnly,
-      scalaLibrary, // Should be a Seq also containing dottyLibrary but zinc
-                    // doesn't support this, see comment above our redefinition
-                    // of `classpathOption`
+      fullLoader,
+      libraryLoader,
+      Array(dottyLibrary, scalaLibrary),
       compiler,
       all.toArray,
       None)

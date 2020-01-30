@@ -118,6 +118,7 @@ class BootstrappedOnlyCompilationTests extends ParallelTesting {
     aggregateTests(
       compileFilesInDir("tests/run-macros", defaultOptions),
       compileFilesInDir("tests/run-custom-args/Yretain-trees", defaultOptions and "-Yretain-trees"),
+      compileFilesInDir("tests/run-custom-args/run-macros-erased", defaultOptions and "-Yerased-terms"),
     )
   }.checkRuns()
 
@@ -126,7 +127,8 @@ class BootstrappedOnlyCompilationTests extends ParallelTesting {
     aggregateTests(
       compileFilesInDir("tests/run-with-compiler", withCompilerOptions),
       compileFilesInDir("tests/run-staging", withStagingOptions),
-      compileDir("tests/run-with-compiler-custom-args/tasty-interpreter", withCompilerOptions)
+      compileFilesInDir("tests/run-custom-args/tasty-inspector", withTastyInspectorOptions),
+      compileDir("tests/run-custom-args/tasty-interpreter", withTastyInspectorOptions),
     ).checkRuns()
   }
 

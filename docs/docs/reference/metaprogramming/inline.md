@@ -33,7 +33,7 @@ object Logger {
 The `Config` object contains a definition of the **inline value** `logging`.
 This means that `logging` is treated as a _constant value_, equivalent to its
 right-hand side `false`. The right-hand side of such an `inline val` must itself
-be a [constant expression](https://scala-lang.org/files/archive/spec/2.12/06-expressions.html#constant-expressions).
+be a [constant expression](https://scala-lang.org/files/archive/spec/2.13/06-expressions.html#constant-expressions).
 Used in this way, `inline` is equivalent to Java and Scala 2's `final`. Note that `final`, meaning
 _inlined constant_, is still supported in Dotty, but will be phased out.
 
@@ -108,24 +108,36 @@ inline def power(x: Double, n: Int): Double = {
     val y = power(x, n / 2)
     if (n % 2 == 0) y * y else y * y * x
   }
-
-  power(expr, 10)
-    // translates to
-    //
-    //    val x = expr
-    //    val y1 = x * x   // ^2
-    //    val y2 = y1 * y1 // ^4
-    //    val y3 = y2 * x  // ^5
-    //    y3 * y3          // ^10
 }
+
+power(expr, 10)
+// translates to
+//
+//    val x = expr
+//    val y1 = x * x   // ^2
+//    val y2 = y1 * y1 // ^4
+//    val y3 = y2 * x  // ^5
+//    y3 * y3          // ^10
 ```
 
 Parameters of inline methods can have an `inline` modifier as well. This means
-that actual arguments to these parameters must be constant expressions.
-For example:
+that actual arguments to these parameters will be inlined in the body of the `inline def`.
+`inline` parameter have call semantics equivalent to by-name parameters but allows for duplication
+of the code in the argument. It is usualy useful constant values need to be propagated to allow
+further optimizations/reductions.
+
+The following example shows the difference in translation between by-value, by-name and `inline`
+parameters:
 
 ```scala
-inline def power(x: Double, inline n: Int): Double
+inline def sumTwice(a: Int, b: =>Int, inline c: Int) = a + a + b + b + c + c
+
+sumTwice(f(), g(), h())
+// translates to
+//
+//    val a = f()
+//    def b = g()
+//    a + a + b + b + h() + h()
 ```
 
 ### Relationship to @inline
@@ -295,7 +307,7 @@ val intTwo: 2 = natTwo
 
 The `scala.compiletime` package contains helper definitions that provide support for compile time operations over values. They are described in the following.
 
-#### `constValue`, `constValueOpt`, and the `S` combinator
+### `constValue`, `constValueOpt`, and the `S` combinator
 
 `constvalue` is a function that produces the constant value represented by a
 type.
@@ -317,7 +329,7 @@ enabling us to handle situations where a value is not present. Note that `S` is
 the type of the successor of some singleton type. For example the type `S[1]` is
 the singleton type `2`.
 
-#### `erasedValue`
+### `erasedValue`
 
 So far we have seen inline methods that take terms (tuples and integers) as
 parameters. What if we want to base case distinctions on types instead? For
@@ -381,7 +393,7 @@ final val two = toIntT[Succ[Succ[Zero.type]]]
 behavior. Since `toInt` performs static checks over the static type of `N` we
 can safely use it to scrutinize its return type (`S[S[Z]]` in this case).
 
-#### `error`
+### `error`
 
 The `error` method is used to produce user-defined compile errors during inline expansion.
 It has the following signature:
@@ -409,6 +421,54 @@ inline def fail(p1: => Any) = {
   error(code"failed on: $p1")
 }
 fail(identity("foo")) // error: failed on: identity("foo")
+```
+
+### The `scala.compiletime.ops` package
+
+The `scala.compiletime.ops` package contains types that provide support for
+primitive operations on singleton types. For example,
+`scala.compiletime.ops.int.*` provides support for multiplying two singleton
+`Int` types, and `scala.compiletime.ops.boolean.&&` for the conjunction of two
+`Boolean` types. When all arguments to a type in `scala.compiletime.ops` are
+singleton types, the compiler can evaluate the result of the operation.
+
+```scala
+import scala.compiletime.ops.int._
+import scala.compiletime.ops.boolean._
+
+val conjunction: true && true = true
+val multiplication: 3 * 5 = 15
+```
+
+Many of these singleton operation types are meant to be used infix (as in [SLS §
+3.2.8](https://www.scala-lang.org/files/archive/spec/2.12/03-types.html#infix-types)),
+and are annotated with [`@infix`](scala.annotation.infix) accordingly.
+
+Since type aliases have the same precedence rules as their term-level
+equivalents, the operations compose with the expected precedence rules:
+
+```scala
+import scala.compiletime.ops.int._
+val x: 1 + 2 * 3 = 7
+```
+
+The operation types are located in packages named after the type of the
+left-hand side parameter: for instance, `scala.compiletime.int.+` represents
+addition of two numbers, while `scala.compiletime.string.+` represents string
+concatenation. To use both and distinguish the two types from each other, a
+match type can dispatch to the correct implementation:
+
+```scala
+import scala.compiletime.ops._
+import scala.annotation.infix
+
+@infix type +[X <: Int | String, Y <: Int | String] = (X, Y) match {
+  case (Int, Int) => int.+[X, Y]
+  case (String, String) => string.+[X, Y]
+}
+
+val concat: "a" + "b" = "ab"
+val addition: 1 + 1 = 2
 ```
 
 ## Summoning Implicits Selectively

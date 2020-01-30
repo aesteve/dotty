@@ -2,11 +2,11 @@ import scala.quoted._
 
 object Foo {
 
-  inline def inspectBody(i: => Int): String =
+  inline def inspectBody(inline i: Int): String =
     ${ inspectBodyImpl('i) }
 
-  def inspectBodyImpl(x: Expr[Int])(given qctx: QuoteContext): Expr[String] = {
-    import qctx.tasty.{_, given}
+  def inspectBodyImpl(x: Expr[Int]) with (qctx: QuoteContext) : Expr[String] = {
+    import qctx.tasty.{_, given _}
 
     def definitionString(sym: Symbol): Expr[String] =
       if sym.isClassDef || sym.isDefDef || sym.isValDef then Expr(sym.tree.showExtractors)

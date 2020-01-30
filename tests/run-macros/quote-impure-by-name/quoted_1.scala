@@ -1,5 +1,5 @@
 import scala.quoted._
-import scala.quoted.autolift.given
+import scala.quoted.autolift.{given _}
 
 
 class Index[K, Keys](val index: String) extends AnyVal {
@@ -9,9 +9,9 @@ object Index {
 
   implicit def zero[K, T]: Index[K, (K, T)] = new Index("0")
 
-  implicit inline def succ[K, H, T](implicit prev: => Index[K, T]): Index[K, (H, T)] = ${ succImpl[K, H, T]('prev) }
+  implicit inline def succ[K, H, T](implicit inline prev: Index[K, T]): Index[K, (H, T)] = ${ succImpl[K, H, T]('prev) }
 
-  def succImpl[K: Type, H: Type, T: Type](prev: Expr[Index[K, T]])(given QuoteContext): Expr[Index[K, (H, T)]] = {
+  def succImpl[K: Type, H: Type, T: Type](prev: Expr[Index[K, T]]) with QuoteContext : Expr[Index[K, (H, T)]] = {
     val value = s"1 + {${prev.show}}"
     '{new Index(${value})}
   }

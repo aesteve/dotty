@@ -636,6 +636,21 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertEquals("List", tpe.show)
     }
 
+  @Test def missingTypeParameterInTypeApp =
+    checkMessagesAfter(RefChecks.name) {
+      """object Scope {
+        |  def f[T] = ???
+        |  val x = f[List]
+        |  val y = f[Either]
+        |}""".stripMargin
+    }
+    .expect { (ictx, messages) =>
+      implicit val ctx: Context = ictx
+      assertMessageCount(2, messages)
+      assertEquals("Missing type parameter for List", messages(1).msg)
+      assertEquals("Missing type parameters for Either", messages(0).msg)
+    }
+
   @Test def doesNotConformToBound =
     checkMessagesAfter(RefChecks.name) {
       """class WithParam[A <: List[Int]]
@@ -1259,7 +1274,7 @@ class ErrorMessagesTests extends ErrorMessagesTest {
     checkMessagesAfter(FrontEnd.name) {
       """
         |object Test {
-        |  { ) }
+        |  { with }
         |  { private ) }
         |}
       """.stripMargin
@@ -1669,4 +1684,58 @@ class ErrorMessagesTests extends ErrorMessagesTest {
       assertEquals("alias", where)
       assertEquals("List[X]", lastChecked.show)
     }
+
+  @Test def implicitTypesCanOnlyBeFunctionTypesSuccess() =
+    checkMessagesAfter(RefChecks.name) ("def foo(f: (given Int) => Int): Int = 1")
+    .expectNoErrors
+
+  @Test def erasedTypesCanOnlyBeFunctionTypesSuccess() =
+    checkMessagesAfter(FrontEnd.name) ("def foo(f: (erased Int) => Int): Int = 1")
+      .expectNoErrors
+
+  @Test def implicitTypesCanOnlyBeFunctionTypesFailed() =
+    checkMessagesAfter(FrontEnd.name) ("def foo(f: (given Int)): Int = 1")
+      .expect { (ictx, messages) =>
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val ImplicitTypesCanOnlyBeFunctionTypes() :: Nil = messages
+        assertEquals("Types with given keyword can only be function types `given (...) => ...`", messages.head.msg)
+      }
+
+  @Test def erasedTypesCanOnlyBeFunctionTypesFailed() =
+    checkMessagesAfter(FrontEnd.name) ("def foo(f: (erased Int)): Int = 1")
+      .expect { (ictx, messages) =>
+        implicit val ctx: Context = ictx
+        assertMessageCount(1, messages)
+        val ErasedTypesCanOnlyBeFunctionTypes() :: Nil = messages
+        assertEquals("Types with erased keyword can only be function types `erased (...) => ...`", messages.head.msg)
+      }
+
+  @Test def caseClassMissingParamListSuccessful =
+    checkMessagesAfter(FrontEnd.name) ("case class Test()")
+      .expectNoErrors
+
+  @Test def caseClassMissingParamListFailed =
+    checkMessagesAfter(FrontEnd.name) ("case class Test")
+      .expect {
+        (ictx, messages) =>
+          implicit val ctx: Context = ictx
+          assertMessageCount(1, messages)
+          val CaseClassMissingParamList(tpe) :: Nil = messages
+          assertEquals("A case class must have at least one parameter list", messages.head.msg)
+      }
+
+  @Test def caseClassMissingNonImplicitParamListSuccessful =
+    checkMessagesAfter(FrontEnd.name) ("case class Test()(given foo: String)")
+      .expectNoErrors
+
+  @Test def caseClassMissingNonImplicitParamListFailed =
+    checkMessagesAfter(FrontEnd.name) ("case class Test(given foo: String)")
+      .expect {
+        (ictx, messages) =>
+          implicit val ctx: Context = ictx
+          assertMessageCount(1, messages)
+          val CaseClassMissingNonImplicitParamList(tpe) :: Nil = messages
+          assertEquals("A case class must have at least one non-implicit parameter list", messages.head.msg)
+      }
 }

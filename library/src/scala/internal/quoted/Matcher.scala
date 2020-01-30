@@ -94,15 +94,13 @@ private[quoted] object Matcher {
       case _ => notMatched
     }
 
-    private given treeListOps: extension (scrutinees: List[Tree]) with
-
+    private given treeListOps: extension (scrutinees: List[Tree]) {
       /** Check that all trees match with =?= and concatenate the results with && */
       def =?= (patterns: List[Tree])(given Context, Env): Matching =
         matchLists(scrutinees, patterns)(_ =?= _)
+    }
 
-    end treeListOps
-
-    private given treeOps: extension (scrutinee0: Tree) with
+    private given treeOps: extension (scrutinee0: Tree) {
 
       /** Check that the trees match and return the contents from the pattern holes.
        *  Return None if the trees do not match otherwise return Some of a tuple containing all the contents in the holes.
@@ -229,8 +227,8 @@ private[quoted] object Matcher {
           case (While(cond1, body1), While(cond2, body2)) =>
             cond1 =?= cond2 && body1 =?= body2
 
-          case (New(tpt1), New(tpt2)) =>
-            tpt1 =?= tpt2
+          case (New(tpt1), New(tpt2)) if tpt1.tpe.typeSymbol == tpt2.tpe.typeSymbol =>
+            matched
 
           case (This(_), This(_)) if scrutinee.symbol == pattern.symbol =>
             matched
@@ -259,9 +257,11 @@ private[quoted] object Matcher {
               if (hasBindAnnotation(pattern.symbol)) bindingMatch(scrutinee.symbol)
               else matched
             def rhsEnv =
-              summon[Env] + (scrutinee.symbol -> pattern.symbol) ++
-                typeParams1.zip(typeParams2).map((tparam1, tparam2) => tparam1.symbol -> tparam2.symbol) ++
+              val oldEnv: Env = summon[Env]
+              val newEnv: List[(Symbol, Symbol)] =
+                (scrutinee.symbol -> pattern.symbol) :: typeParams1.zip(typeParams2).map((tparam1, tparam2) => tparam1.symbol -> tparam2.symbol) :::
                 paramss1.flatten.zip(paramss2.flatten).map((param1, param2) => param1.symbol -> param2.symbol)
+              oldEnv ++ newEnv
 
             bindMatch &&
               typeParams1 =?= typeParams2 &&
@@ -307,7 +307,7 @@ private[quoted] object Matcher {
             notMatched
         }
       }
-    end treeOps
+    }
 
     private object ClosedPatternTerm {
       /** Matches a term that does not contain free variables defined in the pattern (i.e. not defined in `Env`) */
@@ -366,7 +366,7 @@ private[quoted] object Matcher {
       */
     private def patternsMatches(scrutinee: Tree, pattern: Tree)(given Context, Env): (Env, Matching) = (scrutinee, pattern) match {
       case (v1: Term, Unapply(TypeApply(Select(patternHole @ Ident("patternHole"), "unapply"), List(tpt)), Nil, Nil))
-        if patternHole.symbol.owner.fullName == "scala.runtime.quoted.Matcher$" =>
+          if patternHole.symbol.owner == summon[Context].requiredModule("scala.runtime.quoted.Matcher") =>
         (summon[Env], matched(v1.seal))
 
       case (Ident("_"), Ident("_")) =>

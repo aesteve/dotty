@@ -3,6 +3,9 @@ layout: doc-page
 title: "Implicit Function Types"
 ---
 
+**Note** The syntax described in this section is currently under revision.
+[Here is the new version which will be implemented in Dotty 0.22](./context-functions.html).
+
 _Implicit functions_ are functions with (only) implicit parameters.
 Their types are _implicit function types_. Here is an example of an implicit function type:
 
@@ -120,7 +123,7 @@ object PostConditions {
 
   def result[T](given r: WrappedResult[T]): T = r
 
-  def (x: T) ensuring[T](condition: (given WrappedResult[T]) => Boolean): T = {
+  def (x: T).ensuring[T](condition: (given WrappedResult[T]) => Boolean): T = {
     assert(condition(given x))
     x
   }

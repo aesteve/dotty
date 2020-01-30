@@ -7,12 +7,12 @@ object Test extends App {
   class Printer {
     def print() = println("printing")
     object cfg extends Config
-    given config : Config
+    given config as Config
   }
 
   class Scanner {
     def scan() = println("scanning")
-    def (x: Any) scanned = scan()
+    def (x: Any).scanned = scan()
   }
   object Scanner extends Scanner
 

@@ -198,13 +198,18 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
 
     def mergeRefinedOrApplied(tp1: Type, tp2: Type): Type = {
       def fail = throw new AssertionError(i"Failure to join alternatives $tp1 and $tp2")
+      def fallback = tp2 match
+        case AndType(tp21, tp22) =>
+          mergeRefinedOrApplied(tp1, tp21) & mergeRefinedOrApplied(tp1, tp22)
+        case _ =>
+          fail
       tp1 match {
         case tp1 @ RefinedType(parent1, name1, rinfo1) =>
           tp2 match {
             case RefinedType(parent2, `name1`, rinfo2) =>
               tp1.derivedRefinedType(
                 mergeRefinedOrApplied(parent1, parent2), name1, rinfo1 | rinfo2)
-            case _ => fail
+            case _ => fallback
           }
         case tp1 @ AppliedType(tycon1, args1) =>
           tp2 match {
@@ -212,14 +217,16 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
               tp1.derivedAppliedType(
                 mergeRefinedOrApplied(tycon1, tycon2),
                 ctx.typeComparer.lubArgs(args1, args2, tycon1.typeParams))
-            case _ => fail
+            case _ => fallback
           }
         case tp1 @ TypeRef(pre1, _) =>
           tp2 match {
             case tp2 @ TypeRef(pre2, _) if tp1.name eq tp2.name =>
               tp1.derivedSelect(pre1 | pre2)
-            case _ => fail
+            case _ => fallback
           }
+        case AndType(tp11, tp12) =>
+          mergeRefinedOrApplied(tp11, tp2) & mergeRefinedOrApplied(tp12, tp2)
         case _ => fail
       }
     }
@@ -555,17 +562,17 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
 
     val childTp = if (child.isTerm) child.termRef else child.typeRef
 
-    instantiate(childTp, parent)(ctx.fresh.setNewTyperState()).dealias
+    instantiateToSubType(childTp, parent)(ctx.fresh.setNewTyperState()).dealias
   }
 
   /** Instantiate type `tp1` to be a subtype of `tp2`
    *
-   *  Return the instantiated type if type parameters and this type
+   *  Return the instantiated type if type parameters in this type
    *  in `tp1` can be instantiated such that `tp1 <:< tp2`.
    *
    *  Otherwise, return NoType.
    */
-  private def instantiate(tp1: NamedType, tp2: Type)(implicit ctx: Context): Type = {
+  private def instantiateToSubType(tp1: NamedType, tp2: Type)(implicit ctx: Context): Type = {
     /** expose abstract type references to their bounds or tvars according to variance */
     class AbstractTypeMap(maximize: Boolean)(implicit ctx: Context) extends TypeMap {
       def expose(lo: Type, hi: Type): Type =
@@ -637,7 +644,6 @@ trait TypeOps { this: Context => // TODO: Make standalone object.
       tvar =>
         !(ctx.typerState.constraint.entry(tvar.origin) `eq` tvar.origin.underlying) ||
         (tvar `eq` removeThisType.prefixTVar),
-      minimizeAll = false,
       allowBottom = false
     )
 

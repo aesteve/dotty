@@ -11,8 +11,8 @@ object Macro {
     inline def fromTuple[T <: Tuple](s: T) <: Any = ${ fromTupleImpl('s, '{ (x: Array[(String, Any)]) => fromUntypedTuple(x: _*) } ) }
   }
 
-  private def toTupleImpl(s: Expr[Selectable])(given qctx:QuoteContext): Expr[Tuple] = {
-    import qctx.tasty.{given, _}
+  private def toTupleImpl(s: Expr[Selectable]) with (qctx:QuoteContext) : Expr[Tuple] = {
+    import qctx.tasty.{given _, _}
 
     val repr = s.unseal.tpe.widenTermRefExpr.dealias
 
@@ -22,8 +22,8 @@ object Macro {
           info match {
             case _: TypeBounds =>
               rec(parent)
-            case _: MethodType | _: PolyType | _: TypeBounds =>
-              qctx.warning(s"Ignored $name as a field of the record", s)
+            case _: MethodType | _: PolyType | _: TypeBounds | _: ByNameType =>
+              qctx.warning(s"Ignored `$name` as a field of the record", s)
               rec(parent)
             case info: Type =>
               (name, info) :: rec(parent)
@@ -45,8 +45,8 @@ object Macro {
     Expr.ofTuple(ret)
   }
 
-  private def fromTupleImpl[T: Type](s: Expr[Tuple], newRecord: Expr[Array[(String, Any)] => T])(given qctx:QuoteContext): Expr[Any] = {
-    import qctx.tasty.{given, _}
+  private def fromTupleImpl[T: Type](s: Expr[Tuple], newRecord: Expr[Array[(String, Any)] => T]) with (qctx:QuoteContext) : Expr[Any] = {
+    import qctx.tasty.{given _, _}
 
     val repr = s.unseal.tpe.widenTermRefExpr.dealias
 

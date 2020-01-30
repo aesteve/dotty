@@ -727,7 +727,7 @@ object SymDenotations {
       */
     final def isStableMember(implicit ctx: Context): Boolean = {
       def isUnstableValue = isOneOf(UnstableValueFlags) || info.isInstanceOf[ExprType]
-      isType || is(StableRealizable) || !isUnstableValue
+      isType || is(StableRealizable) || exists && !isUnstableValue
     }
 
     /** Is this a denotation of a class that does not have - either direct or inherited -
@@ -929,10 +929,7 @@ object SymDenotations {
     def isSkolem: Boolean = name == nme.SKOLEM
 
     def isInlineMethod(implicit ctx: Context): Boolean =
-      isAllOf(InlineMethod, butNot = Accessor) &&
-      !name.isUnapplyName  // unapply methods do not count as inline methods
-                           // we need an inline flag on them only do that
-                           // reduceProjection gets access to their rhs
+      isAllOf(InlineMethod, butNot = Accessor)
 
     /** Is this a Scala 2 macro */
     final def isScala2Macro(implicit ctx: Context): Boolean = is(Macro) && symbol.owner.is(Scala2x)

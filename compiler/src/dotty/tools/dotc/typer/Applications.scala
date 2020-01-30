@@ -71,7 +71,7 @@ object Applications {
    *  parameterless `isEmpty` member of result type `Boolean`.
    */
   def isGetMatch(tp: Type, errorPos: SourcePosition = NoSourcePosition)(implicit ctx: Context): Boolean =
-    extractorMemberType(tp, nme.isEmpty, errorPos).isRef(defn.BooleanClass) &&
+    extractorMemberType(tp, nme.isEmpty, errorPos).widenSingleton.isRef(defn.BooleanClass) &&
     extractorMemberType(tp, nme.get, errorPos).exists
 
   /** If `getType` is of the form:
@@ -484,11 +484,7 @@ trait Applications extends Compatibility {
             cx.denotNamed(meth.name).hasAltWith(_.symbol == meth)) {
             val denot = cx.denotNamed(getterName)
             if (denot.exists) ref(TermRef(cx.owner.thisType, getterName, denot))
-            else {
-              assert(ctx.mode.is(Mode.Interactive) || ctx.reporter.errorsReported,
-                s"non-existent getter denotation ($denot) for getter($getterName)")
-              findGetter(cx.outer)
-            }
+            else findGetter(cx.outer)
           }
           else findGetter(cx.outer)
         findGetter(ctx)
@@ -915,6 +911,13 @@ trait Applications extends Compatibility {
             // applications of inline functions.
             tree.args match {
               case (arg @ Match(EmptyTree, cases)) :: Nil =>
+                cases.foreach {
+                  case CaseDef(Typed(_: Ident, _), _, _) => // OK
+                  case CaseDef(Bind(_, Typed(_: Ident, _)), _, _) => // OK
+                  case CaseDef(Ident(name), _, _) if name == nme.WILDCARD => // Ok
+                  case CaseDef(pat, _, _) =>
+                    ctx.error("Unexpected pattern for summonFrom. Expeced `x: T` or `_`", pat.sourcePos)
+                }
                 typed(untpd.InlineMatch(EmptyTree, cases).withSpan(arg.span), pt)
               case _ =>
                 errorTree(tree, em"argument to summonFrom must be a pattern matching closure")
@@ -987,7 +990,10 @@ trait Applications extends Compatibility {
 
   /** Overridden in ReTyper to handle primitive operations that can be generated after erasure */
   protected def handleUnexpectedFunType(tree: untpd.Apply, fun: Tree)(implicit ctx: Context): Tree =
-    throw new Error(i"unexpected type.\n  fun = $fun,\n  methPart(fun) = ${methPart(fun)},\n  methPart(fun).tpe = ${methPart(fun).tpe},\n  tpe = ${fun.tpe}")
+    if ctx.reporter.errorsReported then
+      throw TypeError(i"unexpected function type: ${methPart(fun).tpe}")
+    else
+      throw Error(i"unexpected type.\n  fun = $fun,\n  methPart(fun) = ${methPart(fun)},\n  methPart(fun).tpe = ${methPart(fun).tpe},\n  tpe = ${fun.tpe}")
 
   def typedNamedArgs(args: List[untpd.Tree])(implicit ctx: Context): List[NamedArg] =
     for (arg @ NamedArg(id, argtpt) <- args) yield {
@@ -1606,7 +1612,7 @@ trait Applications extends Compatibility {
    *  called twice from the public `resolveOverloaded` method, once with
    *  implicits and SAM conversions enabled, and once without.
    */
-  private def resolveOverloaded(alts: List[TermRef], pt: Type, targs: List[Type])(implicit ctx: Context): List[TermRef] = {
+  private def resolveOverloaded(alts: List[TermRef], pt: Type, targs: List[Type])(implicit ctx: Context): List[TermRef] =
     record("resolveOverloaded/2")
 
     def isDetermined(alts: List[TermRef]) = alts.isEmpty || alts.tail.isEmpty
@@ -1775,28 +1781,42 @@ trait Applications extends Compatibility {
       candidates.flatMap(cloneCandidate)
     }
 
+    def resultIsMethod(tp: Type): Boolean = tp.widen.stripPoly match
+      case tp: MethodType => tp.resultType.isInstanceOf[MethodType]
+      case _ => false
+
     val found = narrowMostSpecific(candidates)
     if (found.length <= 1) found
-    else pt match {
-      case pt @ FunProto(_, resType: FunProto) =>
-        // try to narrow further with snd argument list
-        val advanced = advanceCandidates(pt.typedArgs().tpes)
-        resolveOverloaded(advanced.map(_._1), resType, Nil) // resolve with candidates where first params are stripped
-          .map(advanced.toMap) // map surviving result(s) back to original candidates
-      case _ =>
-        val noDefaults = alts.filter(!_.symbol.hasDefaultParams)
-        val noDefaultsCount = noDefaults.length
-        if (noDefaultsCount == 1)
-          noDefaults // return unique alternative without default parameters if it exists
-        else if (noDefaultsCount > 1 && noDefaultsCount < alts.length)
-          resolveOverloaded(noDefaults, pt, targs) // try again, dropping defult arguments
-        else {
-          val deepPt = pt.deepenProto
-          if (deepPt ne pt) resolveOverloaded(alts, deepPt, targs)
-          else candidates
-        }
-    }
-  }
+    else
+      val deepPt = pt.deepenProto
+      deepPt match
+        case pt @ FunProto(_, resType: FunProto) =>
+          // try to narrow further with snd argument list
+          val advanced = advanceCandidates(pt.typedArgs().tpes)
+          resolveOverloaded(advanced.map(_._1), resType, Nil) // resolve with candidates where first params are stripped
+            .map(advanced.toMap) // map surviving result(s) back to original candidates
+        case _ =>
+          // prefer alternatives that need no eta expansion
+          val noCurried = alts.filter(!resultIsMethod(_))
+          val noCurriedCount = noCurried.length
+          if noCurriedCount == 1 then
+            noCurried
+          else if noCurriedCount > 1 && noCurriedCount < alts.length then
+            resolveOverloaded(noCurried, pt, targs)
+          else
+            // prefer alternatves that match without default parameters
+            val noDefaults = alts.filter(!_.symbol.hasDefaultParams)
+            val noDefaultsCount = noDefaults.length
+            if noDefaultsCount == 1 then
+              noDefaults
+            else if noDefaultsCount > 1 && noDefaultsCount < alts.length then
+              resolveOverloaded(noDefaults, pt, targs)
+            else if deepPt ne pt then
+              // try again with a deeper known expected type
+              resolveOverloaded(alts, deepPt, targs)
+            else
+              candidates
+  end resolveOverloaded
 
   /** Try to typecheck any arguments in `pt` that are function values missing a
    *  parameter type. If the formal parameter types corresponding to a closure argument

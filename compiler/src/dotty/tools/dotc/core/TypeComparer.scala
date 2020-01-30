@@ -417,6 +417,7 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
         if (tp11.stripTypeVar eq tp12.stripTypeVar) recur(tp11, tp2)
         else thirdTry
       case tp1 @ OrType(tp11, tp12) =>
+
         def joinOK = tp2.dealiasKeepRefiningAnnots match {
           case tp2: AppliedType if !tp2.tycon.typeSymbol.isClass =>
             // If we apply the default algorithm for `A[X] | B[Y] <: C[Z]` where `C` is a
@@ -427,6 +428,12 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
           case _ =>
             false
         }
+
+        def containsAnd(tp: Type): Boolean = tp.dealiasKeepRefiningAnnots match
+          case tp: AndType => true
+          case OrType(tp1, tp2) => containsAnd(tp1) || containsAnd(tp2)
+          case _ => false
+
         def widenOK =
           (tp2.widenSingletons eq tp2) &&
           (tp1.widenSingletons ne tp1) &&
@@ -435,7 +442,15 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
         if (tp2.atoms.nonEmpty && canCompare(tp2.atoms))
           tp1.atoms.nonEmpty && tp1.atoms.subsetOf(tp2.atoms)
         else
-          widenOK || joinOK || recur(tp11, tp2) && recur(tp12, tp2)
+          widenOK
+          || joinOK
+          || recur(tp11, tp2) && recur(tp12, tp2)
+          || containsAnd(tp1) && recur(tp1.join, tp2)
+              // An & on the left side loses information. Compensate by also trying the join.
+              // This is less ad-hoc than it looks since we produce joins in type inference,
+              // and then need to check that they are indeed supertypes of the original types
+              // under -Ycheck. Test case is i7965.scala.
+
       case tp1: MatchType =>
         val reduced = tp1.reduced
         if (reduced.exists) recur(reduced, tp2) else thirdTry
@@ -482,7 +497,7 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
           }
           else if (cls2.is(JavaDefined)) {
             // If `cls2` is parameterized, we are seeing a raw type, so we need to compare only the symbol
-            val base = tp1.baseType(cls2)
+            val base = nonExprBaseType(tp1, cls2)
             if (base.typeSymbol == cls2) return true
           }
           else if (tp1.isLambdaSub && !tp1.isRef(AnyKindClass))
@@ -706,7 +721,7 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
     }
 
     def tryBaseType(cls2: Symbol) = {
-      val base = tp1.baseType(cls2)
+      val base = nonExprBaseType(tp1, cls2)
       if (base.exists && (base `ne` tp1))
         isSubType(base, tp2, if (tp1.isRef(cls2)) approx else approx.addLow) ||
         base.isInstanceOf[OrType] && fourthTry
@@ -930,8 +945,8 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
               val classBounds = tycon2.classSymbols
               def liftToBase(bcs: List[ClassSymbol]): Boolean = bcs match {
                 case bc :: bcs1 =>
-                  classBounds.exists(bc.derivesFrom) && appOK(tp1w.baseType(bc)) ||
-                  liftToBase(bcs1)
+                  classBounds.exists(bc.derivesFrom) && appOK(nonExprBaseType(tp1, bc))
+                  || liftToBase(bcs1)
                 case _ =>
                   false
               }
@@ -971,7 +986,7 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
           compareLower(bounds(param2), tyconIsTypeRef = false)
         case tycon2: TypeRef =>
           isMatchingApply(tp1) ||
-          defn.isCompiletime_S(tycon2.symbol) && compareS(tp2, tp1, fromBelow = true) || {
+          defn.isCompiletimeAppliedType(tycon2.symbol) && compareCompiletimeAppliedType(tp2, tp1, fromBelow = true) || {
             tycon2.info match {
               case info2: TypeBounds =>
                 compareLower(info2, tyconIsTypeRef = true)
@@ -1011,7 +1026,7 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
         case tycon1: TypeRef =>
           val sym = tycon1.symbol
           !sym.isClass && {
-            defn.isCompiletime_S(sym) && compareS(tp1, tp2, fromBelow = false) ||
+            defn.isCompiletimeAppliedType(sym) && compareCompiletimeAppliedType(tp1, tp2, fromBelow = false) ||
             recur(tp1.superType, tp2) ||
             tryLiftedToThis1
           }
@@ -1021,7 +1036,7 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
           false
       }
 
-    /** Compare `tp` of form `S[arg]` with `other`, via ">:>` if fromBelow is true, "<:<" otherwise.
+    /** Compare `tp` of form `S[arg]` with `other`, via ">:>" if fromBelow is true, "<:<" otherwise.
      *  If `arg` is a Nat constant `n`, proceed with comparing `n + 1` and `other`.
      *  Otherwise, if `other` is a Nat constant `n`, proceed with comparing `arg` and `n - 1`.
      */
@@ -1041,6 +1056,18 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
             }
         }
       case _ => false
+    }
+
+    /** Compare `tp` of form `tycon[...args]`, where `tycon` is a scala.compiletime type,
+     *  with `other` via ">:>" if fromBelow is true, "<:<" otherwise.
+     *  Delegates to compareS if `tycon` is scala.compiletime.S. Otherwise, constant folds if possible.
+     */
+    def compareCompiletimeAppliedType(tp: AppliedType, other: Type, fromBelow: Boolean): Boolean = {
+      if (defn.isCompiletime_S(tp.tycon.typeSymbol)) compareS(tp, other, fromBelow)
+      else {
+        val folded = tp.tryCompiletimeConstantFold
+        if (fromBelow) recur(other, folded) else recur(folded, other)
+      }
     }
 
     /** Like tp1 <:< tp2, but returns false immediately if we know that
@@ -1094,6 +1121,10 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
       }
     }
   }
+
+  private def nonExprBaseType(tp: Type, cls: Symbol)(given Context): Type =
+    if tp.isInstanceOf[ExprType] then NoType
+    else tp.baseType(cls)
 
   /** If `tp` is an external reference to an enclosing module M that contains opaque types,
    *  convert to M.this.
@@ -1271,7 +1302,7 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
       case bc :: bcs1 =>
         (classBounds.exists(bc.derivesFrom) &&
           variancesConform(bc.typeParams, tparams) &&
-          p(tp1.baseType(bc))
+          p(nonExprBaseType(tp1, bc))
         ||
         recur(bcs1))
       case nil =>
@@ -1494,6 +1525,7 @@ class TypeComparer(initctx: Context) extends ConstraintHandling[AbsentContext] w
     case tp: SingletonType if tp.isStable => tp
     case tp: ValueType => SkolemType(tp)
     case tp: TypeProxy => ensureStableSingleton(tp.underlying)
+    case tp => assert(ctx.reporter.errorsReported); SkolemType(tp)
   }
 
   /** Skip refinements in `tp2` which match corresponding refinements in `tp1`.

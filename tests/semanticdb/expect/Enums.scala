@@ -1,25 +1,25 @@
-object Enums with
+object Enums:
   import <:<._
 
-  enum Colour with
+  enum Colour:
     import Colour.Red
     case Red, Green, Blue
 
-  enum Directions with
+  enum Directions:
     case North, East, South, West
 
-  enum Suits derives Eql with
+  enum Suits derives Eql:
     case Hearts, Spades, Clubs, Diamonds
 
-  object Suits with
-    def (suit: Suits) isRed: Boolean =
+  object Suits:
+    def (suit: Suits).isRed: Boolean =
       suit == Hearts || suit == Diamonds
 
-    def (suit: Suits) isBlack: Boolean = suit match
+    def (suit: Suits).isBlack: Boolean = suit match
       case Spades | Diamonds => true
       case _                 => false
 
-  enum WeekDays with
+  enum WeekDays:
     case Monday
     case Tuesday
     case Wednesday
@@ -28,33 +28,33 @@ object Enums with
     case Saturday
     case Sunday
 
-  enum Coin(value: Int) with
+  enum Coin(value: Int):
     case Penny    extends Coin(1)
     case Nickel   extends Coin(5)
     case Dime     extends Coin(10)
     case Quarter  extends Coin(25)
     case Dollar   extends Coin(100)
 
-  enum Maybe[+A] with
+  enum Maybe[+A]:
     case Just(value: A)
     case None
 
-  enum Tag[A] with
+  enum Tag[A]:
     case IntTag extends Tag[Int]
     case BooleanTag extends Tag[Boolean]
 
-  enum <:<[-A, B] with
+  enum <:<[-A, B]:
     case Refl[C]() extends (C <:< C)
 
-  object <:< with
-    given [T]: (T <:< T) = Refl()
+  object <:< :
+    given [T] as (T <:< T) = Refl()
 
-  def [A, B](opt: Option[A]) unwrap(given ev: A <:< Option[B]): Option[B] = ev match
+  def [A, B](opt: Option[A]) unwrap with (ev: A <:< Option[B]) : Option[B] = ev match
     case Refl() => opt.flatMap(identity[Option[B]])
 
   val some1 = Some(Some(1)).unwrap
 
-  enum Planet(mass: Double, radius: Double) extends java.lang.Enum[Planet] with
+  enum Planet(mass: Double, radius: Double) extends java.lang.Enum[Planet]:
     private final val G = 6.67300E-11
     def surfaceGravity = G * mass / (radius * radius)
     def surfaceWeight(otherMass: Double) = otherMass * surfaceGravity

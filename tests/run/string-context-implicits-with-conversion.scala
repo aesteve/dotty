@@ -1,10 +1,10 @@
 
 object Lib {
-  def (sc: StringContext) showMe(args: Showed*): String = sc.s(args: _*)
+  def (sc: StringContext).showMe(args: Showed*): String = sc.s(args: _*)
 
   opaque type Showed = String
 
-  given [T]: (show: Show[T]) => Conversion[T, Showed] = x => show(x)
+  given [T] with (show: Show[T]) as Conversion[T, Showed] = x => show(x)
 
   trait Show[T] {
     def apply(x: T): String

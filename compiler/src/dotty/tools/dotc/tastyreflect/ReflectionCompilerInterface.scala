@@ -15,7 +15,7 @@ import dotty.tools.dotc.tastyreflect.FromSymbol.{definitionFromSym, packageDefFr
 import dotty.tools.dotc.typer.Implicits.{AmbiguousImplicits, DivergingImplicit, NoMatchingImplicits, SearchFailure, SearchFailureType}
 import dotty.tools.dotc.util.{SourceFile, SourcePosition, Spans}
 
-import scala.runtime.quoted.Unpickler
+import scala.internal.quoted.Unpickler
 import scala.tasty.reflect.CompilerInterface
 
 import scala.tasty.reflect.IsInstanceOf
@@ -58,6 +58,11 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
 
   def Context_GADT_approximation(self: Context)(sym: Symbol, fromBelow: Boolean): Type =
     self.gadt.approximation(sym, fromBelow)
+
+  def Context_requiredPackage(self: Context)(path: String): Symbol = self.requiredPackage(path)
+  def Context_requiredClass(self: Context)(path: String): Symbol = self.requiredClass(path)
+  def Context_requiredModule(self: Context)(path: String): Symbol = self.requiredModule(path)
+  def Context_requiredMethod(self: Context)(path: String): Symbol = self.requiredMethod(path)
 
   //
   // REPORTING
@@ -1112,6 +1117,9 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case _ => None
   }
 
+  def TypeBounds_apply(low: Type, hi: Type)(given ctx: Context): TypeBounds =
+    Types.TypeBounds(low, hi)
+
   def TypeBounds_low(self: TypeBounds)(given Context): Type = self.lo
   def TypeBounds_hi(self: TypeBounds)(given Context): Type = self.hi
 
@@ -1196,6 +1204,9 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case tpe: Types.ConstantType => Some(tpe)
       case _ => None
   }
+  
+  def ConstantType_apply(const: Constant)(given Context): ConstantType =
+    Types.ConstantType(const)
 
   def ConstantType_constant(self: ConstantType)(given Context): Constant = self.value
 
@@ -1300,6 +1311,9 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case _ => None
   }
 
+  def AnnotatedType_apply(underlying: Type, annot: Term)(given Context): AnnotatedType =
+    Types.AnnotatedType(underlying, Annotations.Annotation(annot))
+
   def AnnotatedType_underlying(self: AnnotatedType)(given Context): Type = self.underlying.stripTypeVar
   def AnnotatedType_annot(self: AnnotatedType)(given Context): Term = self.annot.tree
 
@@ -1311,6 +1325,9 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case tpe: Types.AndType => Some(tpe)
       case _ => None
   }
+
+  def AndType_apply(lhs: Type, rhs: Type)(given Context): AndType =
+    Types.AndType(lhs, rhs)
 
   def AndType_left(self: AndType)(given Context): Type = self.tp1.stripTypeVar
   def AndType_right(self: AndType)(given Context): Type = self.tp2.stripTypeVar
@@ -1324,6 +1341,9 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case _ => None
   }
 
+  def OrType_apply(lhs: Type, rhs: Type)(given Context): OrType =
+    Types.OrType(lhs, rhs)
+
   def OrType_left(self: OrType)(given Context): Type = self.tp1.stripTypeVar
   def OrType_right(self: OrType)(given Context): Type = self.tp2.stripTypeVar
 
@@ -1335,6 +1355,9 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case tpe: Types.MatchType => Some(tpe)
       case _ => None
   }
+
+  def MatchType_apply(bound: Type, scrutinee: Type, cases: List[Type])(given Context): MatchType =
+    Types.MatchType(bound, scrutinee, cases)
 
   def MatchType_bound(self: MatchType)(given Context): Type = self.bound
   def MatchType_scrutinee(self: MatchType)(given Context): Type = self.scrutinee
@@ -1348,6 +1371,8 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case tpe: Types.ExprType => Some(tpe)
       case _ => None
   }
+
+  def ByNameType_apply(underlying: Type)(given Context): Type = Types.ExprType(underlying)
 
   def ByNameType_underlying(self: ByNameType)(given Context): Type = self.resType.stripTypeVar
 
@@ -1414,6 +1439,7 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
 
   def MethodType_isErased(self: MethodType): Boolean = self.isErasedMethod
   def MethodType_isImplicit(self: MethodType): Boolean = self.isImplicitMethod
+  def MethodType_param(self: MethodType, idx: Int)(given Context): Type = self.newParamRef(idx)
   def MethodType_paramNames(self: MethodType)(given Context): List[String] = self.paramNames.map(_.toString)
   def MethodType_paramTypes(self: MethodType)(given Context): List[Type] = self.paramInfos
   def MethodType_resType(self: MethodType)(given Context): Type = self.resType
@@ -1427,6 +1453,10 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case _ => None
   }
 
+  def PolyType_apply(paramNames: List[String])(paramBoundsExp: PolyType => List[TypeBounds], resultTypeExp: PolyType => Type)(given Context): PolyType =
+    Types.PolyType(paramNames.map(_.toTypeName))(paramBoundsExp, resultTypeExp)
+
+  def PolyType_param(self: PolyType, idx: Int)(given Context): Type = self.newParamRef(idx)
   def PolyType_paramNames(self: PolyType)(given Context): List[String] = self.paramNames.map(_.toString)
   def PolyType_paramBounds(self: PolyType)(given Context): List[TypeBounds] = self.paramInfos
   def PolyType_resType(self: PolyType)(given Context): Type = self.resType
@@ -1440,8 +1470,13 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
       case _ => None
   }
 
+  def TypeLambda_apply(paramNames: List[String], boundsFn: TypeLambda => List[TypeBounds], bodyFn: TypeLambda => Type): TypeLambda =
+    Types.HKTypeLambda(paramNames.map(_.toTypeName))(boundsFn, bodyFn)
+
   def TypeLambda_paramNames(self: TypeLambda)(given Context): List[String] = self.paramNames.map(_.toString)
   def TypeLambda_paramBounds(self: TypeLambda)(given Context): List[TypeBounds] = self.paramInfos
+  def TypeLambda_param(self: TypeLambda, idx: Int)(given Context): Type =
+    self.newParamRef(idx)
   def TypeLambda_resType(self: TypeLambda)(given Context): Type = self.resType
 
   //
@@ -1688,6 +1723,11 @@ class ReflectionCompilerInterface(val rootContext: core.Contexts.Context) extend
 
   def Symbol_of(fullName: String)(given ctx: Context): Symbol =
     ctx.requiredClass(fullName)
+
+  def Symbol_newMethod(parent: Symbol, name: String, flags: Flags, tpe: Type, privateWithin: Symbol)(given ctx: Context): Symbol = {
+    val computedFlags = flags | Flags.Method
+    ctx.newSymbol(parent, name.toTermName, computedFlags, tpe, privateWithin)
+  }
 
   def Symbol_isTypeParam(self: Symbol)(given Context): Boolean =
     self.isTypeParam

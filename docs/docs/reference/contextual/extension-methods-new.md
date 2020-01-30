@@ -8,7 +8,7 @@ Extension methods allow one to add methods to a type after the type is defined. 
 ```scala
 case class Circle(x: Double, y: Double, radius: Double)
 
-def (c: Circle) circumference: Double = c.radius * math.Pi * 2
+def (c: Circle).circumference: Double = c.radius * math.Pi * 2
 ```
 
 Like regular methods, extension methods can be invoked with infix `.`:
@@ -42,7 +42,7 @@ As an example, consider an extension method `longestStrings` on `Seq[String]` de
 
 ```scala
 trait StringSeqOps {
-  def (xs: Seq[String]) longestStrings = {
+  def (xs: Seq[String]).longestStrings = {
     val maxLength = xs.map(_.length).max
     xs.filter(_.length == maxLength)
   }
@@ -78,48 +78,28 @@ and where `T` is the expected type. The following two rewritings are tried in or
 So `circle.circumference` translates to `CircleOps.circumference(circle)`, provided
 `circle` has type `Circle` and `CircleOps` is given  (i.e. it is visible at the point of call or it is defined in the companion object of `Circle`).
 
-### Given Instances for Extension Methods
-
-A special syntax allows to define a given instance for one or more extension methods without listing a parent type.
-Examples:
-
-```scala
-given stringOps: (xs: Seq[String]) {
-  def longestStrings: Seq[String] = {
-    val maxLength = xs.map(_.length).max
-    xs.filter(_.length == maxLength)
-  }
-}
-
-given [T](xs: List[T]) {
-  def second = xs.tail.head
-  def third[T]: T = xs.tail.tail.head
-}
-```
-These given clauses define extension methods `longestStrings`, `second`, and `third`. All extension methods defined in such a given clause
-share the same leading parameters, which follow the `given`. The remainder of the extension methods is written as regular defs inside braces.
-
-If such given instances are anonymous (as in the second clause), their name is synthesized from the name of the first defined extension method.
-
-
 ### Operators
 
 The extension method syntax also applies to the definition of operators.
-In each case the definition syntax mirrors the way the operator is applied.
+In this case it is allowed and preferable to omit the period between the leading parameter list
+and the operator. In each case the definition syntax mirrors the way the operator is applied.
 Examples:
 ```scala
 def (x: String) < (y: String) = ...
 def (x: Elem) +: (xs: Seq[Elem]) = ...
+def (x: Number) min (y: Number) = ...
 
-"ab" + "c"
+"ab" < "c"
 1 +: List(2, 3)
+x min 3
 ```
-The two definitions above translate to
+The three definitions above translate to
 ```scala
 def < (x: String)(y: String) = ...
 def +: (xs: Seq[Elem])(x: Elem) = ...
+def min(x: Number)(y: Number) = ...
 ```
-Note that swap of the two parameters `x` and `xs` when translating
+Note the swap of the two parameters `x` and `xs` when translating
 the right-binding operator `+:` to an extension method. This is analogous
 to the implementation of right binding operators as normal methods.
 
@@ -128,28 +108,75 @@ to the implementation of right binding operators as normal methods.
 The `StringSeqOps` examples extended a specific instance of a generic type. It is also possible to extend a generic type by adding type parameters to an extension method. Examples:
 
 ```scala
-def (xs: List[T]) second [T] =
+def [T](xs: List[T]) second =
   xs.tail.head
 
-def (xs: List[List[T]]) flattened [T] =
+def [T](xs: List[List[T]]) flattened =
   xs.foldLeft[List[T]](Nil)(_ ++ _)
 
-def (x: T) + [T : Numeric](y: T): T =
+def [T: Numeric](x: T) + (y: T): T =
   summon[Numeric[T]].plus(x, y)
 ```
 
-As usual, type parameters of the extension method follow the defined method name. Nevertheless, such type parameters can already be used in the preceding parameter clause.
+If an extension method has type parameters, they come immediately after the `def` and are followed by the extended parameter. When calling a  generic extension method, any explicitly given type arguments follow the method name. So the `second` method can be instantiated as follows:
+```scala
+List(1, 2, 3).second[Int]
+```
+### Collective Extensions
 
+A collective extension defines one or more concrete methods that have the same type parameters
+and prefix parameter. Examples:
+
+```scala
+extension stringOps on (xs: Seq[String]) {
+  def longestStrings: Seq[String] = {
+    val maxLength = xs.map(_.length).max
+    xs.filter(_.length == maxLength)
+  }
+}
+
+extension listOps on [T](xs: List[T]) {
+  def second = xs.tail.head
+  def third: T = xs.tail.tail.head
+}
+
+extension on [T](xs: List[T])(given Ordering[T]) {
+  def largest(n: Int) = xs.sorted.takeRight(n)
+}
+```
+If a given extension is anonymous (as in the last clause), its name is synthesized from the name of the first defined extension method.
+
+The extensions above are equivalent to the following regular given instances where the implemented parent is `AnyRef` and the parameters in the `extension` clause are repeated in each extension method definition:
+```scala
+given stringOps: AnyRef {
+  def (xs: Seq[String]).longestStrings: Seq[String] = {
+    val maxLength = xs.map(_.length).max
+    xs.filter(_.length == maxLength)
+  }
+}
+given listOps: AnyRef {
+  def [T](xs: List[T]) second = xs.tail.head
+  def [T](xs: List[T]) third: T = xs.tail.tail.head
+}
+given extension_largest_List_T: AnyRef {
+  def [T](xs: List[T]) largest (given Ordering[T])(n: Int) =
+    xs.sorted.takeRight(n)
+}
+```
+
+`extension` and `on` are soft keywords. They can also be used as a regular identifiers.
 
 ### Syntax
 
-The required syntax extension just adds one clause for extension methods relative
-to the [current syntax](../../internals/syntax.md).
+Here are the syntax changes for extension methods and given extensions relative
+to the [current syntax](../../internals/syntax.md). `extension` is a soft keyword, recognized only in tandem with `on`. It can be used as an identifier everywhere else.
+
 ```
 DefSig            ::=  ...
-                    |  ‘(’ DefParam ‘)’ [nl] id [DefTypeParamClause] DefParamClauses
-GivenDef          ::=  ...
-                       [GivenSig ‘:’] [ExtParamClause] ExtMethods
-ExtParamClause    ::=  [DefTypeParamClause] ‘(’ DefParam ‘)’ {GivenParamClause}
-ExtMethods        ::=  [nl] ‘{’ ‘def’ DefDef {semi ‘def’ DefDef} ‘}’
+                    |  ExtParamClause [nl] [‘.’] id DefParamClauses
+ExtParamClause    ::=  [DefTypeParamClause] ‘(’ DefParam ‘)’
+TmplDef           ::=  ...
+                    |  ‘extension’ ExtensionDef
+ExtensionDef      ::=  [id] ‘on’ ExtParamClause {GivenParamClause} ExtMethods
+ExtMethods        ::=  ‘{’ ‘def’ DefDef {semi ‘def’ DefDef} ‘}’
 ```

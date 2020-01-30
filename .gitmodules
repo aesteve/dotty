@@ -47,9 +47,6 @@
 [submodule "community-build/community-projects/xml-interpolator"]
 	path = community-build/community-projects/xml-interpolator
 	url = https://github.com/lampepfl/xml-interpolator.git
-[submodule "community-build/community-projects/semanticdb"]
-	path = community-build/community-projects/semanticdb
-	url = https://github.com/lampepfl/dotty-semanticdb.git
 [submodule "community-build/community-projects/effpi"]
 	path = community-build/community-projects/effpi
 	url = https://github.com/dotty-staging/effpi
@@ -68,3 +65,6 @@
 [submodule "community-build/community-projects/upickle"]
 	path = community-build/community-projects/upickle
 	url = https://github.com/dotty-staging/upickle.git
+[submodule "community-build/community-projects/sconfig"]
+	path = community-build/community-projects/sconfig
+	url = https://github.com/ekrich/sconfig.git

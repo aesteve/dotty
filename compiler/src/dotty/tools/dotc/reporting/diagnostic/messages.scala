@@ -314,56 +314,46 @@ object messages {
 
     val msg: String = {
       import core.Flags._
-      val maxDist = 3
-      val decls = site.decls.toList
-        .filter(_.isType == name.isTypeName)
-        .flatMap { sym =>
-          if (sym.flagsUNSAFE.isOneOf(Synthetic | PrivateLocal) || sym.isConstructor) Nil
-          else List((sym.name.show, sym))
-        }
+      val maxDist = 3  // maximal number of differences to be considered for a hint
+      val missing = name.show
+
+      // The names of all non-synthetic, non-private members of `site`
+      // that are of the same type/term kind as the missing member.
+      def candidates: Set[String] =
+        for
+          bc <- site.widen.baseClasses.toSet
+          sym <- bc.info.decls.filter(sym =>
+            sym.isType == name.isTypeName
+            && !sym.isConstructor
+            && !sym.flagsUNSAFE.isOneOf(Synthetic | Private))
+        yield sym.name.show
 
       // Calculate Levenshtein distance
-      def distance(n1: Iterable[?], n2: Iterable[?]) =
-        n1.foldLeft(List.range(0, n2.size)) { (prev, x) =>
-          (prev zip prev.tail zip n2).scanLeft(prev.head + 1) {
-            case (h, ((d, v), y)) => math.min(
-              math.min(h + 1, v + 1),
-              if (x == y) d else d + 1
-            )
-          }
-        }.last
+      def distance(s1: String, s2: String): Int =
+        val dist = Array.ofDim[Int](s2.length + 1, s1.length + 1)
+        for
+          j <- 0 to s2.length
+          i <- 0 to s1.length
+        do
+          dist(j)(i) =
+            if j == 0 then i
+            else if i == 0 then j
+            else if s2(j - 1) == s1(i - 1) then dist(j - 1)(i - 1)
+            else (dist(j - 1)(i) min dist(j)(i - 1) min dist(j - 1)(i - 1)) + 1
+        dist(s2.length)(s1.length)
 
-      // Count number of wrong characters
-      def incorrectChars(x: (String, Int, Symbol)): (String, Symbol, Int) = {
-        val (currName, _, sym) = x
-        val matching = name.show.zip(currName).foldLeft(0) {
-          case (acc, (x,y)) => if (x != y) acc + 1 else acc
-        }
-        (currName, sym, matching)
-      }
-
-      // Get closest match in `site`
-      def closest: List[String] =
-        decls
-        .map { (n, sym) => (n, distance(n, name.show), sym) }
-        .collect {
-          case (n, dist, sym)
-          if dist <= maxDist && dist < (name.toString.length min n.length) =>
-            (n, dist, sym)
-        }
-        .groupBy(_._2).toList
-        .sortBy(_._1)
-        .headOption.map(_._2).getOrElse(Nil)
-        .map(incorrectChars).toList
-        .sortBy(_._3)
-        .map(_._1)
-          // [Martin] Note: I have no idea what this does. This shows the
-          // pitfalls of not naming things, functional or not.
+      // A list of possible candidate strings with their Levenstein distances
+      // to the name of the missing member
+      def closest: List[(Int, String)] = candidates
+        .toList
+        .map(n => (distance(n.show, missing), n))
+        .filter((d, n) => d <= maxDist && d < missing.length && d < n.length)
+        .sorted  // sort by distance first, alphabetically second
 
       val finalAddendum =
         if addendum.nonEmpty then addendum
         else closest match {
-          case n :: _ =>
+          case (d, n) :: _ =>
             val siteName = site match
               case site: NamedType => site.name.show
               case site => i"$site"
@@ -1467,6 +1457,15 @@ object messages {
     val explanation: String = ""
   }
 
+  case class MissingTypeParameterInTypeApp(tpe: Type)(implicit ctx: Context)
+    extends Message(MissingTypeParameterInTypeAppID) {
+    val numParams = tpe.typeParams.length
+    val parameters = if (numParams == 1) "parameter" else "parameters"
+    val msg: String = em"Missing type $parameters for $tpe"
+    val kind: String = "Type Mismatch"
+    val explanation: String = em"A fully applied type is expected but $tpe takes $numParams $parameters."
+  }
+
   case class DoesNotConformToBound(tpe: Type, which: String, bound: Type)(
     err: Errors)(implicit ctx: Context)
     extends Message(DoesNotConformToBoundID) {
@@ -2382,4 +2381,30 @@ object messages {
       val msg: String = i"illegal cyclic type reference: ${where} ${hl(lastChecked.show)} of $sym refers back to the type itself"
       val explanation: String = ""
     }
+
+  case class ImplicitTypesCanOnlyBeFunctionTypes()(implicit val ctx: Context)
+    extends Message(ImplicitTypesCanOnlyBeFunctionTypesID) {
+    val kind: String = "Syntax"
+    val msg: String = "Types with given keyword can only be function types `given (...) => ...`"
+    val explanation: String = ""
+  }
+
+  case class ErasedTypesCanOnlyBeFunctionTypes()(implicit val ctx: Context)
+    extends Message(ErasedTypesCanOnlyBeFunctionTypesID) {
+    val kind: String = "Syntax"
+    val msg: String = "Types with erased keyword can only be function types `erased (...) => ...`"
+    val explanation: String = ""
+  }
+
+  case class CaseClassMissingNonImplicitParamList(cdef: untpd.TypeDef)(implicit ctx: Context)
+    extends Message(CaseClassMissingNonImplicitParamListID) {
+    val kind: String = "Syntax"
+    val msg: String =
+      em"""|A ${hl("case class")} must have at least one non-implicit parameter list"""
+
+    val explanation: String =
+      em"""|${cdef.name} must have at least one non-implicit parameter list,
+           | if you're aiming to have a case class parametrized only by implicit ones, you should
+           | add an explicit ${hl("()")} as a parameter list to ${cdef.name}.""".stripMargin
+  }
 }

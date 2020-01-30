@@ -6,11 +6,11 @@ title: "Macros"
 ### Macros: Quotes and Splices
 
 Macros are built on two well-known fundamental operations: quotation and
-splicing.  Quotation is expressed as `'{...}` for expressions (both forms are
-equivalent) and as `'[...]` for types. Splicing is expressed as `${ ... }`.
-Additionally, within a quote or a splice we can quote or splice identifiers
-directly (i.e. `'e` and `$e`). Readers may notice the resemblance of the two
-aforementioned syntactic schemes with the familiar string interpolation syntax.
+splicing.  Quotation is expressed as `'{...}` for expressions and as `'[...]`
+for types. Splicing is expressed as `${ ... }`. Additionally, within a quote
+or a splice we can quote or splice identifiers directly (i.e. `'e` and `$e`).
+Readers may notice the resemblance of the two aforementioned syntactic
+schemes with the familiar string interpolation syntax.
 
 ```scala
 println(s"Hello, $name, here is the result of 1 + 1 = ${1 + 1}")
@@ -161,14 +161,15 @@ different directions here for `f` and `x`.  The reference to `f` is
 legal because it is quoted, then spliced, whereas the reference to `x`
 is legal because it is spliced, then quoted.
 
-### Types and the PCP
+### Lifting Types
 
-In principle, The phase consistency principle applies to types as well
-as for expressions. This might seem too restrictive. Indeed, the
-definition of `reflect` above is not phase correct since there is a
+Types are not directly affected by the phase consistency principle.
+It is possible to use types defined at any level in any other level.
+But, if a type is used in a subsequent stage it will need to be lifted to a `Type`.
+The resulting value of `Type` will be subject to PCP.
+Indeed, the definition of `reflect` above uses `T` in the next stage, there is a
 quote but no splice between the parameter binding of `T` and its
-usage. But the code can be made phase correct by adding a binding
-of a `Type[T]` tag:
+usage. But the code can be rewritten by adding a binding of a `Type[T]` tag:
 ```scala
 def reflect[T, U](f: Expr[T] => Expr[U])(given t: Type[T]): Expr[T => U] =
   '{ (x: $t) => ${ f('x) } }
@@ -177,8 +178,8 @@ In this version of `reflect`, the type of `x` is now the result of
 splicing the `Type` value `t`. This operation _is_ splice correct -- there
 is one quote and one splice between the use of `t` and its definition.
 
-To avoid clutter, the Scala implementation tries to convert any phase-incorrect
-reference to a type `T` to a type-splice, by rewriting `T` to `${ summon[Type[T]] }`.
+To avoid clutter, the Scala implementation tries to convert any type
+reference to a type `T` in subsequent phases to a type-splice, by rewriting `T` to `${ summon[Type[T]] }`.
 For instance, the user-level definition of `reflect`:
 
 ```scala
@@ -190,7 +191,7 @@ would be rewritten to
 def reflect[T: Type, U: Type](f: Expr[T] => Expr[U]): Expr[T => U] =
   '{ (x: ${ summon[Type[T]] }) => ${ f('x) } }
 ```
-The `the` query succeeds because there is a given instance of
+The `summon` query succeeds because there is a given instance of
 type `Type[T]` available (namely the given parameter corresponding
 to the context bound `: Type`), and the reference to that value is
 phase-correct. If that was not the case, the phase inconsistency for
@@ -267,7 +268,7 @@ knowing anything about the representation of `Expr` trees. For
 instance, here is a possible instance of `Liftable[Boolean]`:
 ```scala
 given Liftable[Boolean] {
-  def toExpr(b: Boolean)(given QuoteContext): Expr[Boolean] =
+  def toExpr(b: Boolean) =
     if (b) '{ true } else '{ false }
 }
 ```
@@ -276,7 +277,7 @@ possible implementation of `Liftable[Int]` that does not use the underlying
 tree machinery:
 ```scala
 given Liftable[Int] {
-  def toExpr(n: Int)(given QuoteContext): Expr[Int] = n match {
+  def toExpr(n: Int) = n match {
     case Int.MinValue    => '{ Int.MinValue }
     case _ if n < 0      => '{ - ${ toExpr(-n) } }
     case 0               => '{ 0 }
@@ -288,9 +289,9 @@ given Liftable[Int] {
 Since `Liftable` is a type class, its instances can be conditional. For example,
 a `List` is liftable if its element type is:
 ```scala
-given [T: Liftable] : Liftable[List[T]] {
-  def toExpr(xs: List[T])(given QuoteContext): Expr[List[T]] = xs match {
-    case head :: tail => '{ ${ toExpr(head) } :: ${ toExpr(tail) } }
+given [T: Liftable : Type] : Liftable[List[T]] {
+  def toExpr(xs: List[T]) = xs match {
+    case head :: tail => '{ ${ Expr(head) } :: ${ toExpr(tail) } }
     case Nil => '{ Nil: List[T] }
   }
 }
@@ -303,7 +304,7 @@ analogue of lifting.
 
 Using lifting, we can now give the missing definition of `showExpr` in the introductory example:
 ```scala
-def showExpr[T](expr: Expr[T]): Expr[String] = {
+def showExpr[T](expr: Expr[T])(given QuoteContext): Expr[String] = {
   val code: String = expr.show
   Expr(code)
 }
@@ -355,11 +356,11 @@ again together with a program that calls `assert`.
 ```scala
 object Macros {
 
-  inline def assert(expr: => Boolean): Unit =
+  inline def assert(inline expr: Boolean): Unit =
     ${ assertImpl('expr) }
 
   def assertImpl(expr: Expr[Boolean]) =
-    '{ if !($expr) then throw new AssertionError(s"failed assertion: ${$expr}") }
+    '{ if !($expr) then throw new AssertionError("failed assertion: " + ${expr.show}) }
 }
 
 object App {
@@ -413,33 +414,28 @@ assume that both definitions are local.
 
 The `inline` modifier is used to declare a `val` that is
 either a constant or is a parameter that will be a constant when instantiated. This
-aspect is also important for macro expansion.  To illustrate this,
-consider an implementation of the `power` function that makes use of a
-statically known exponent:
-```scala
-inline def power(inline n: Int, x: Double) = ${ powerCode(n, 'x) }
+aspect is also important for macro expansion.
 
-private def powerCode(n: Int, x: Expr[Double]): Expr[Double] =
+To get values out of expressions containing constants `Expr` provides the method
+`getValue` (or `value`). This will convert the `Expr[T]` into a `Some[T]` (or `T`) when the
+expression contains value. Otherwise it will retrun `None` (or emit an error).
+To avoid having incidental val bindings generated by the inlining of the `def`
+it is recommended to use an inline parameter. To illustrate this, consider an
+implementation of the `power` function that makes use of a statically known exponent:
+```scala
+inline def power(x: Double, inline n: Int) = ${ powerCode('x, 'n) }
+
+private def powerCode(x: Expr[Double], n: Expr[Int])(given QuoteContext): Expr[Double] =
+  n.getValue match
+    case Some(m) => powerCode(x, m)
+    case None => '{ Math.pow($x, $y) }
+
+private def powerCode(x: Expr[Double], n: Int)(given QuoteContext): Expr[Double] =
   if (n == 0) '{ 1.0 }
   else if (n == 1) x
-  else if (n % 2 == 0) '{ val y = $x * $x; ${ powerCode(n / 2, 'y) } }
-  else '{ $x * ${ powerCode(n - 1, x) } }
+  else if (n % 2 == 0) '{ val y = $x * $x; ${ powerCode('y, n / 2) } }
+  else '{ $x * ${ powerCode(x, n - 1) } }
 ```
-The reference to `n` as an argument in `${ powerCode(n, 'x) }` is not
-phase-consistent, since `n` appears in a splice without an enclosing
-quote. Normally that would be a problem because it means that we need
-the _value_ of `n` at compile time, which is not available for general
-parameters. But since `n` is an inline parameter of a macro, we know
-that at the macro’s expansion point `n` will be instantiated to a
-constant, so the value of `n` will in fact be known at this
-point. To reflect this, we loosen the phase consistency requirements
-as follows:
-
- - If `x` is a inline value (or a inline parameter of an inline
-   function) of type Boolean, Byte, Short, Int, Long, Float, Double,
-   Char or String, it can be accessed in all contexts where the number
-   of splices minus the number of quotes between use and definition
-   is either 0 or 1.
 
 ### Scope Extrusion
 
@@ -471,7 +467,7 @@ that invokation of `run` in splices. Consider the following expression:
 '{ (x: Int) => ${ run('x); 1 } }
 ```
 This is again phase correct, but will lead us into trouble. Indeed, evaluating
-the splice will reduce the expression `('x).run` to `x`. But then the result
+the splice will reduce the expression `run('x)` to `x`. But then the result
 
 ```scala
 '{ (x: Int) => ${ x; 1 } }
@@ -569,7 +565,7 @@ sum
 ### Find implicits within a macro
 
 Similarly to the `summonFrom` construct, it is possible to make implicit search available
-in a quote context. For this we simply provide `scala.quoted.matching.summonExpr:
+in a quote context. For this we simply provide `scala.quoted.matching.summonExpr`:
 
 ```scala
 inline def setFor[T]: Set[T] = ${ setForExpr[T] }
@@ -589,12 +585,12 @@ inline method that can calculate either a value of type `Int` or a value of type
 `String`.
 
 ```scala
-inline def defaultOf(inline str: String) <: Any = ${ defaultOfImpl(str) }
+inline def defaultOf(inline str: String) <: Any = ${ defaultOfImpl('str) }
 
-def defaultOfImpl(str: String): Expr[Any] = str match {
-  case "int" => '{1}
-  case "string" => '{"a"}
-}
+def defaultOfImpl(strExpr: Expr[String])(given QuoteContext): Expr[Any] =
+  strExpr.value match
+    case "int" => '{1}
+    case "string" => '{"a"}
 
 // in a separate file
 val a: Int = defaultOf("int")
@@ -623,8 +619,10 @@ It is possible to deconstruct or extract values out of `Expr` using pattern matc
 In `scala.quoted.matching` contains object that can help extract values from `Expr`.
 
 * `scala.quoted.matching.Const`: matches an expression a literal value and returns the value.
+* `scala.quoted.matching.Value`: matches an expression a value and returns the value.
 * `scala.quoted.matching.ExprSeq`: matches an explicit sequence of expresions and returns them. These sequences are useful to get individual `Expr[T]` out of a varargs expression of type `Expr[Seq[T]]`.
 * `scala.quoted.matching.ConstSeq`:  matches an explicit sequence of literal values and returns them.
+* `scala.quoted.matching.ValueSeq`:  matches an explicit sequence of values and returns them.
 
 These could be used in the following way to optimize any call to `sum` that has statically known values.
 ```scala
@@ -660,7 +658,7 @@ optimize {
 ```
 
 ```scala
-def sum(args: =>Int*): Int = args.sum
+def sum(args: Int*): Int = args.sum
 inline def optimize(arg: Int): Int = ${ optimizeExpr('arg) }
 private def optimizeExpr(body: Expr[Int])(given QuoteContext): Expr[Int] = body match {
   // Match a call to sum without any arguments
@@ -694,7 +692,7 @@ private def sumExpr(args1: Seq[Expr[Int]])(given QuoteContext): Expr[Int] = {
 Sometimes it is necessary to get a more precise type for an expression. This can be achived using the following pattern match.
 
 ```scala
-def f(exp: Expr[Any]) =
+def f(exp: Expr[Any])(given QuoteContext) =
   expr match
     case '{ $x: $t } =>
       // If the pattern match succeeds, then there is some type `T` such that
@@ -707,7 +705,7 @@ This might be used to then perform an implicit search as in:
 
 
 ```scala
-inline def (sc: StringContext) showMe(args: =>Any*): String = ${ showMeExpr('sc, 'args) }
+inline def (sc: StringContext).showMe(args: =>Any*): String = ${ showMeExpr('sc, 'args) }
 
 private def showMeExpr(sc: Expr[StringContext], argsExpr: Expr[Seq[Any]])(given qctx: QuoteContext): Expr[String] = {
   argsExpr match {

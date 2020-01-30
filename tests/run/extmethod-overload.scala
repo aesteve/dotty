@@ -22,7 +22,7 @@ object Test extends App {
   // Test with extension methods in given object
   object test1 {
 
-    given Foo: AnyRef {
+    given Foo as AnyRef {
       def (x: Int) |+| (y: Int) = x + y
       def (x: Int) |+| (y: String) = x + y.length
 
@@ -61,7 +61,7 @@ object Test extends App {
       def [T](xs: List[T]) +++ (ys: List[T]): List[T] = xs ++ ys ++ ys
       def [T](xs: List[T]) +++ (ys: Iterator[T]): List[T] = xs ++ ys ++ ys
     }
-    given Bar : Foo
+    given Bar as Foo
 
     assert((1 |+| 2) == 3)
     assert((1 |+| "2") == 2)
@@ -88,16 +88,16 @@ object Test extends App {
   class C {
     def xx (x: Any) = 2
   }
-  def (c: C) xx (x: Int) = 1
+  def (c: C).xx(x: Int) = 1
 
   val c = new C
   assert(c.xx(1) == 2)  // member method takes precedence
 
   object D {
-    def (x: Int) yy (y: Int) = x + y
+    def (x: Int).yy(y: Int) = x + y
   }
 
-  given (x: Int) extended with {
+  extension on (x: Int) {
     def yy (y: Int) = x - y
   }
 
@@ -114,8 +114,8 @@ object Test extends App {
     def b: Long = a
   }
 
-  def (rectangle: Rectangle) area: Long = 0
-  def (square: Square) area: Long = square.a * square.a
+  def (rectangle: Rectangle).area: Long = 0
+  def (square: Square).area: Long = square.a * square.a
   val rectangles = List(GenericRectangle(2, 3), Square(5))
   val areas = rectangles.map(_.area)
   assert(areas.sum == 0)

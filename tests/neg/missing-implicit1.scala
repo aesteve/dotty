@@ -1,18 +1,18 @@
-object testObjectInstance with
+object testObjectInstance:
   trait Zip[F[_]]
   trait Traverse[F[_]] {
     def [A, B, G[_] : Zip](fa: F[A]) traverse(f: A => G[B]): G[F[B]]
   }
 
   object instances {
-    given zipOption: Zip[Option] = ???
-    given traverseList: Traverse[List] = ???
-    given listExtension: [T](xs: List[T]) extended with
+    given zipOption as Zip[Option] = ???
+    given traverseList as Traverse[List] = ???
+    extension listExtension on [T](xs: List[T]):
       def second: T = xs.tail.head
     def [T](xs: List[T]) first: T = xs.head
   }
 
-  def ff(given xs: Zip[Option]) = ???
+  def ff with (xs: Zip[Option]) = ???
 
   ff // error
 
@@ -35,11 +35,11 @@ def testLocalInstance =
   }
 
   object instances {
-    given zipOption: Zip[Option] = ???
-    given traverseList: Traverse[List] = ???
+    given zipOption as Zip[Option] = ???
+    given traverseList as Traverse[List] = ???
   }
 
-  def ff(given xs: Zip[Option]) = ???
+  def ff with (xs: Zip[Option]) = ???
 
   ff // error
 

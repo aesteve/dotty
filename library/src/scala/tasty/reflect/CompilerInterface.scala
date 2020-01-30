@@ -2,7 +2,7 @@ package scala.tasty.reflect // TODO move to scala.internal.tasty.reflect
 
 import scala.quoted.QuoteContext
 import scala.tasty.Reflection
-import scala.runtime.quoted.Unpickler
+import scala.internal.quoted.Unpickler
 
 /** Tasty reflect abstract types
  *
@@ -147,6 +147,18 @@ trait CompilerInterface {
   def Context_GADT_setFreshGADTBounds(self: Context): Context
   def Context_GADT_addToConstraint(self: Context)(syms: List[Symbol]): Boolean
   def Context_GADT_approximation(self: Context)(sym: Symbol, fromBelow: Boolean): Type
+
+  /** Get package symbol if package is either defined in current compilation run or present on classpath. */
+  def Context_requiredPackage(self: Context)(path: String): Symbol
+
+  /** Get class symbol if class is either defined in current compilation run or present on classpath. */
+  def Context_requiredClass(self: Context)(path: String): Symbol
+
+  /** Get module symbol if module is either defined in current compilation run or present on classpath. */
+  def Context_requiredModule(self: Context)(path: String): Symbol
+
+  /** Get method symbol if method is either defined in current compilation run or present on classpath. Throws if the method has an overload. */
+  def Context_requiredMethod(self: Context)(path: String): Symbol
 
   //
   // REPORTING
@@ -785,6 +797,8 @@ trait CompilerInterface {
 
   def isInstanceOfTypeBounds(given ctx: Context): IsInstanceOf[TypeBounds]
 
+  def TypeBounds_apply(low: Type, hi: Type)(given ctx: Context): TypeBounds
+
   def TypeBounds_low(self: TypeBounds)(given ctx: Context): Type
   def TypeBounds_hi(self: TypeBounds)(given ctx: Context): Type
 
@@ -875,6 +889,8 @@ trait CompilerInterface {
 
   def isInstanceOfConstantType(given ctx: Context): IsInstanceOf[ConstantType]
 
+  def ConstantType_apply(const : Constant)(given ctx : Context) : ConstantType
+
   def ConstantType_constant(self: ConstantType)(given ctx: Context): Constant
 
   /** Type of a reference to a term symbol */
@@ -929,6 +945,8 @@ trait CompilerInterface {
 
   def isInstanceOfAnnotatedType(given ctx: Context): IsInstanceOf[AnnotatedType]
 
+  def AnnotatedType_apply(underlying: Type, annot: Term)(given ctx: Context): AnnotatedType
+
   def AnnotatedType_underlying(self: AnnotatedType)(given ctx: Context): Type
   def AnnotatedType_annot(self: AnnotatedType)(given ctx: Context): Term
 
@@ -936,6 +954,8 @@ trait CompilerInterface {
   type AndType <: Type
 
   def isInstanceOfAndType(given ctx: Context): IsInstanceOf[AndType]
+
+  def AndType_apply(lhs: Type, rhs: Type)(given ctx: Context): AndType
 
   def AndType_left(self: AndType)(given ctx: Context): Type
   def AndType_right(self: AndType)(given ctx: Context): Type
@@ -945,6 +965,8 @@ trait CompilerInterface {
 
   def isInstanceOfOrType(given ctx: Context): IsInstanceOf[OrType]
 
+  def OrType_apply(lhs : Type, rhs : Type)(given ctx : Context): OrType
+
   def OrType_left(self: OrType)(given ctx: Context): Type
   def OrType_right(self: OrType)(given ctx: Context): Type
 
@@ -952,6 +974,8 @@ trait CompilerInterface {
   type MatchType <: Type
 
   def isInstanceOfMatchType(given ctx: Context): IsInstanceOf[MatchType]
+
+  def MatchType_apply(bound: Type, scrutinee: Type, cases: List[Type])(given ctx: Context): MatchType
 
   def MatchType_bound(self: MatchType)(given ctx: Context): Type
   def MatchType_scrutinee(self: MatchType)(given ctx: Context): Type
@@ -961,6 +985,8 @@ trait CompilerInterface {
   type ByNameType <: Type
 
   def isInstanceOfByNameType(given ctx: Context): IsInstanceOf[ByNameType]
+
+  def ByNameType_apply(underlying: Type)(given ctx: Context): Type
 
   def ByNameType_underlying(self: ByNameType)(given ctx: Context): Type
 
@@ -1007,6 +1033,7 @@ trait CompilerInterface {
 
   def MethodType_isErased(self: MethodType): Boolean
   def MethodType_isImplicit(self: MethodType): Boolean
+  def MethodType_param(self: MethodType, ids: Int)(given ctx: Context): Type
   def MethodType_paramNames(self: MethodType)(given ctx: Context): List[String]
   def MethodType_paramTypes(self: MethodType)(given ctx: Context): List[Type]
   def MethodType_resType(self: MethodType)(given ctx: Context): Type
@@ -1016,6 +1043,9 @@ trait CompilerInterface {
 
   def isInstanceOfPolyType(given ctx: Context): IsInstanceOf[PolyType]
 
+  def PolyType_apply(paramNames: List[String])(paramBoundsExp: PolyType => List[TypeBounds], resultTypeExp: PolyType => Type)(given ctx: Context): PolyType 
+
+  def PolyType_param(self: PolyType, idx: Int)(given ctx: Context): Type
   def PolyType_paramNames(self: PolyType)(given ctx: Context): List[String]
   def PolyType_paramBounds(self: PolyType)(given ctx: Context): List[TypeBounds]
   def PolyType_resType(self: PolyType)(given ctx: Context): Type
@@ -1025,8 +1055,11 @@ trait CompilerInterface {
 
   def isInstanceOfTypeLambda(given ctx: Context): IsInstanceOf[TypeLambda]
 
+  def TypeLambda_apply(paramNames: List[String], boundsFn: TypeLambda => List[TypeBounds], bodyFn: TypeLambda => Type): TypeLambda
+
   def TypeLambda_paramNames(self: TypeLambda)(given ctx: Context): List[String]
   def TypeLambda_paramBounds(self: TypeLambda)(given ctx: Context): List[TypeBounds]
+  def TypeLambda_param(self: TypeLambda, idx: Int)(given ctx: Context): Type
   def TypeLambda_resType(self: TypeLambda)(given ctx: Context): Type
 
   //
@@ -1236,6 +1269,8 @@ trait CompilerInterface {
   def Symbol_caseFields(self: Symbol)(given ctx: Context): List[Symbol]
 
   def Symbol_of(fullName: String)(given ctx: Context): Symbol
+
+  def Symbol_newMethod(parent: Symbol, name: String, flags: Flags, tpe: Type, privateWithin: Symbol)(given ctx: Context): Symbol
 
   def Symbol_isTypeParam(self: Symbol)(given ctx: Context): Boolean
 

@@ -779,7 +779,7 @@ trait Implicits { self: Typer =>
   /** If `formal` is of the form Eql[T, U], try to synthesize an
     *  `Eql.eqlAny[T, U]` as solution.
     */
-  lazy val synthesizedEq: SpecialHandler = {
+  lazy val synthesizedEql: SpecialHandler = {
     (formal, span) => implicit ctx => {
 
       /** Is there an `Eql[T, T]` instance, assuming -strictEquality? */
@@ -859,9 +859,9 @@ trait Implicits { self: Typer =>
     (formal, span) => implicit ctx => {
       def success(t: Tree) = New(defn.ValueOfClass.typeRef.appliedTo(t.tpe), t :: Nil).withSpan(span)
 
-      formal.argTypes match {
+      formal.argInfos match {
         case arg :: Nil =>
-          fullyDefinedType(arg.dealias, "ValueOf argument", span) match {
+          fullyDefinedType(arg.dealias, "ValueOf argument", span).normalized match {
             case ConstantType(c: Constant) =>
               success(Literal(c))
             case TypeRef(_, sym) if sym == defn.UnitClass =>
@@ -909,7 +909,7 @@ trait Implicits { self: Typer =>
   /** A path referencing the companion of class type `clsType` */
   private def companionPath(clsType: Type, span: Span)(implicit ctx: Context) = {
     val ref = pathFor(clsType.companionRef)
-    assert(ref.symbol.is(Module) && ref.symbol.companionClass == clsType.classSymbol)
+    assert(ref.symbol.is(Module) && (clsType.classSymbol.is(ModuleClass) || (ref.symbol.companionClass == clsType.classSymbol)))
     ref.withSpan(span)
   }
 
@@ -1091,7 +1091,7 @@ trait Implicits { self: Typer =>
       mySpecialHandlers = List(
         defn.ClassTagClass        -> synthesizedClassTag,
         defn.QuotedTypeClass      -> synthesizedTypeTag,
-        defn.EqlClass             -> synthesizedEq,
+        defn.EqlClass             -> synthesizedEql,
         defn.TupledFunctionClass  -> synthesizedTupleFunction,
         defn.ValueOfClass         -> synthesizedValueOf,
         defn.Mirror_ProductClass  -> synthesizedProductMirror,
@@ -1217,7 +1217,7 @@ trait Implicits { self: Typer =>
           err.userDefinedErrorString(
             raw,
             pt.typeSymbol.typeParams.map(_.name.unexpandedName.toString),
-            pt.widenExpr.argInfos))
+            pt.widenExpr.dropDependentRefinement.argInfos))
 
         def hiddenImplicitsAddendum: String =
 
@@ -1389,18 +1389,17 @@ trait Implicits { self: Typer =>
               untpd.Apply(untpdConv, untpd.TypedSplice(argument) :: Nil),
               pt, locked)
           }
-          if (cand.isExtension) {
-            val SelectionProto(name: TermName, mbrType, _, _) = pt
-            val result = extMethodApply(untpd.Select(untpdGenerated, name), argument, mbrType)
-            if (!ctx.reporter.hasErrors && cand.isConversion) {
-              val testCtx = ctx.fresh.setExploreTyperState()
-              tryConversion(testCtx)
-              if (testCtx.reporter.hasErrors)
-                ctx.error(em"ambiguous implicit: $generated is eligible both as an implicit conversion and as an extension method container")
-            }
-            result
-          }
-          else tryConversion
+          pt match
+            case SelectionProto(name: TermName, mbrType, _, _) if cand.isExtension =>
+              val result = extMethodApply(untpd.Select(untpdGenerated, name), argument, mbrType)
+              if !ctx.reporter.hasErrors && cand.isConversion then
+                val testCtx = ctx.fresh.setExploreTyperState()
+                tryConversion(testCtx)
+                if testCtx.reporter.hasErrors then
+                  ctx.error(em"ambiguous implicit: $generated is eligible both as an implicit conversion and as an extension method container")
+              result
+            case _ =>
+              tryConversion
         }
       if (ctx.reporter.hasErrors) {
         ctx.reporter.removeBufferedMessages

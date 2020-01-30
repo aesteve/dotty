@@ -18,6 +18,7 @@ import dotty.tools.dotc.util.SourcePosition
 import dotty.tools.dotc.util.Spans._
 import dotty.tools.dotc.transform.SymUtils._
 import dotty.tools.dotc.transform.TreeMapWithStages._
+import dotty.tools.dotc.typer.Checking
 import dotty.tools.dotc.typer.Implicits.SearchFailureType
 import dotty.tools.dotc.typer.Inliner
 
@@ -31,7 +32,7 @@ import scala.annotation.constructorOnly
  *
  *  Type healing consists in transforming a phase inconsistent type `T` into a splice of `implicitly[Type[T]]`.
  */
-class PCPCheckAndHeal(@constructorOnly ictx: Context) extends TreeMapWithStages(ictx) {
+class PCPCheckAndHeal(@constructorOnly ictx: Context) extends TreeMapWithStages(ictx) with Checking {
   import tpd._
 
   private val InAnnotation = Property.Key[Unit]()
@@ -87,8 +88,6 @@ class PCPCheckAndHeal(@constructorOnly ictx: Context) extends TreeMapWithStages(
     def checkTp(tp: Type): Type = checkType(tree.sourcePos).apply(tp)
     tree match {
       case Quoted(_) | Spliced(_)  =>
-        tree
-      case tree: RefTree if tree.symbol.isAllOf(InlineParam) =>
         tree
       case _: This =>
         assert(checkSymLevel(tree.symbol, tree.tpe, tree.sourcePos).isEmpty)
@@ -176,7 +175,12 @@ class PCPCheckAndHeal(@constructorOnly ictx: Context) extends TreeMapWithStages(
     if (!sym.exists || levelOK(sym) || isStaticPathOK(tp) || isStaticNew(tp))
       None
     else if (!sym.isStaticOwner && !isClassRef)
-      tryHeal(sym, tp, pos)
+      tp match
+        case tp: TypeRef =>
+          if levelOf(sym).getOrElse(0) < level then tryHeal(sym, tp, pos)
+          else None
+        case _ =>
+          levelError(sym, tp, pos, "")
     else if (!sym.owner.isStaticOwner) // non-top level class reference that is phase inconsistent
       levelError(sym, tp, pos, "")
     else
@@ -192,50 +196,38 @@ class PCPCheckAndHeal(@constructorOnly ictx: Context) extends TreeMapWithStages(
     case Some(l) =>
       l == level ||
         level == -1 && (
-            // here we assume that Splicer.canBeSpliced was true before going to level -1,
-            // this implies that all non-inline arguments are quoted and that the following two cases are checked
-            // on inline parameters or type parameters.
-            sym.is(Param) ||
+            // here we assume that Splicer.checkValidMacroBody was true before going to level -1,
+            // this implies that all arguments are quoted.
             sym.isClass // reference to this in inline methods
           )
     case None =>
       sym.is(Package) || sym.owner.isStaticOwner || levelOK(sym.owner)
   }
 
-  /** Try to heal phase-inconsistent reference to type `T` using a local type definition.
+  /** Try to heal reference to type `T` used in a higher level than its definition.
    *  @return None      if successful
    *  @return Some(msg) if unsuccessful where `msg` is a potentially empty error message
    *                    to be added to the "inconsistent phase" message.
    */
-  protected def tryHeal(sym: Symbol, tp: Type, pos: SourcePosition)(implicit ctx: Context): Option[Tree] =
-    tp match {
-      case tp: TypeRef =>
-        if (level == -1) {
-          assert(ctx.inInlineMethod)
-          None
-        }
-        else {
-          val reqType = defn.QuotedTypeClass.typeRef.appliedTo(tp)
-          val tag = ctx.typer.inferImplicitArg(reqType, pos.span)
-          tag.tpe match {
-            case _: TermRef =>
-              Some(tag.select(tpnme.splice))
-            case _: SearchFailureType =>
-              levelError(sym, tp, pos,
-                         i"""
-                            |
-                            | The access would be accepted with the right type tag, but
-                            | ${ctx.typer.missingArgMsg(tag, reqType, "")}""")
-            case _ =>
-              levelError(sym, tp, pos,
-                         i"""
-                            |
-                            | The access would be accepted with an implict $reqType""")
-          }
-        }
+  protected def tryHeal(sym: Symbol, tp: TypeRef, pos: SourcePosition)(implicit ctx: Context): Option[Tree] = {
+    val reqType = defn.QuotedTypeClass.typeRef.appliedTo(tp)
+    val tag = ctx.typer.inferImplicitArg(reqType, pos.span)
+    tag.tpe match
+      case tp: TermRef =>
+        checkStable(tp, pos)
+        Some(tag.select(tpnme.splice))
+      case _: SearchFailureType =>
+        levelError(sym, tp, pos,
+                    i"""
+                      |
+                      | The access would be accepted with the right type tag, but
+                      | ${ctx.typer.missingArgMsg(tag, reqType, "")}""")
       case _ =>
-        levelError(sym, tp, pos, "")
-    }
+        levelError(sym, tp, pos,
+                    i"""
+                      |
+                      | The access would be accepted with a given $reqType""")
+  }
 
   private def levelError(sym: Symbol, tp: Type, pos: SourcePosition, errMsg: String)(given Context) = {
     def symStr =

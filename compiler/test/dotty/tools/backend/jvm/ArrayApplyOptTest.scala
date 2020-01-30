@@ -8,7 +8,7 @@ import scala.tools.asm.Opcodes._
 class ArrayApplyOptTest extends DottyBytecodeTest {
   import ASMConverters._
 
-  @Test def testArrayEmptyGenericApply= {
+  @Test def testArrayEmptyGenericApply = {
     test("Array[String]()", List(Op(ICONST_0), TypeOp(ANEWARRAY, "java/lang/String"), Op(POP), Op(RETURN)))
     test("Array[Unit]()", List(Op(ICONST_0), TypeOp(ANEWARRAY, "scala/runtime/BoxedUnit"), Op(POP), Op(RETURN)))
     test("Array[Object]()", List(Op(ICONST_0), TypeOp(ANEWARRAY, "java/lang/Object"), Op(POP), Op(RETURN)))
@@ -36,7 +36,7 @@ class ArrayApplyOptTest extends DottyBytecodeTest {
     test("IArray[T]()", newArray0Opcodes(T_INT, TypeOp(CHECKCAST, "[I") :: Nil))
   }
 
-  @Test def testArrayGenericApply= {
+  @Test def testArrayGenericApply = {
     def opCodes(tpe: String) =
       List(Op(ICONST_2), TypeOp(ANEWARRAY, tpe), Op(DUP), Op(ICONST_0), Ldc(LDC, "a"), Op(AASTORE), Op(DUP), Op(ICONST_1), Ldc(LDC, "b"), Op(AASTORE), Op(POP), Op(RETURN))
     test("""Array("a", "b")""", opCodes("java/lang/String"))
@@ -111,7 +111,7 @@ class ArrayApplyOptTest extends DottyBytecodeTest {
 
   @Test def testArrayInlined = test(
     """{
-      |  inline def array(xs: =>Int*): Array[Int] = Array(xs: _*)
+      |  inline def array(inline xs: Int*): Array[Int] = Array(xs: _*)
       |  array(1, 2)
       |}""".stripMargin,
     newArray2Opcodes(T_INT, List(Op(DUP), Op(ICONST_0), Op(ICONST_1), Op(IASTORE), Op(DUP), Op(ICONST_1), Op(ICONST_2), Op(IASTORE), TypeOp(CHECKCAST, "[I")))
@@ -119,7 +119,7 @@ class ArrayApplyOptTest extends DottyBytecodeTest {
 
   @Test def testArrayInlined2 = test(
     """{
-      |  inline def array(x: =>Int, xs: =>Int*): Array[Int] = Array(x, xs: _*)
+      |  inline def array(inline x: Int, inline xs: Int*): Array[Int] = Array(x, xs: _*)
       |  array(1, 2)
       |}""".stripMargin,
     newArray2Opcodes(T_INT, List(Op(DUP), Op(ICONST_0), Op(ICONST_1), Op(IASTORE), Op(DUP), Op(ICONST_1), Op(ICONST_2), Op(IASTORE)))
@@ -127,7 +127,7 @@ class ArrayApplyOptTest extends DottyBytecodeTest {
 
   @Test def testArrayInlined3 = test(
     """{
-      |  inline def array[T](xs: =>T*)(given ct: =>scala.reflect.ClassTag[T]): Array[T] = Array(xs: _*)
+      |  inline def array[T](inline xs: T*)(given inline ct: scala.reflect.ClassTag[T]): Array[T] = Array(xs: _*)
       |  array(1, 2)
       |}""".stripMargin,
     newArray2Opcodes(T_INT, List(Op(DUP), Op(ICONST_0), Op(ICONST_1), Op(IASTORE), Op(DUP), Op(ICONST_1), Op(ICONST_2), Op(IASTORE), TypeOp(CHECKCAST, "[I")))

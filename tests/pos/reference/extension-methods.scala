@@ -1,20 +1,20 @@
-object ExtMethods with
+object ExtMethods:
 
   case class Circle(x: Double, y: Double, radius: Double)
 
-  def (c: Circle) circumference: Double = c.radius * math.Pi * 2
+  def (c: Circle).circumference: Double = c.radius * math.Pi * 2
 
   val circle = Circle(0, 0, 1)
   circle.circumference
   assert(circle.circumference == circumference(circle))
 
   trait StringSeqOps {
-    def (xs: Seq[String]) longestStrings = {
+    def (xs: Seq[String]).longestStrings = {
       val maxLength = xs.map(_.length).max
       xs.filter(_.length == maxLength)
     }
   }
-  given ops1: StringSeqOps
+  given ops1 as StringSeqOps
 
   List("here", "is", "a", "list").longestStrings
 
@@ -41,35 +41,35 @@ object ExtMethods with
 
   List(1, 2, 3).second[Int]
 
-  given stringOps: (xs: Seq[String]) extended with {
+  extension stringOps on (xs: Seq[String]) {
     def longestStrings: Seq[String] = {
       val maxLength = xs.map(_.length).max
       xs.filter(_.length == maxLength)
     }
   }
 
-  given listOps: [T](xs: List[T]) extended with
+  extension listOps on [T](xs: List[T]):
     def second = xs.tail.head
     def third: T = xs.tail.tail.head
 
 
-  given [T](xs: List[T])(given Ordering[T]) extended with
+  extension on [T](xs: List[T]) with Ordering[T] :
     def largest(n: Int) = xs.sorted.takeRight(n)
 
-  given stringOps1: AnyRef {
-    def (xs: Seq[String]) longestStrings: Seq[String] = {
+  given stringOps1 as AnyRef {
+    def (xs: Seq[String]).longestStrings: Seq[String] = {
       val maxLength = xs.map(_.length).max
       xs.filter(_.length == maxLength)
     }
   }
 
-  given listOps1: AnyRef {
+  given listOps1 as AnyRef {
     def [T](xs: List[T]) second = xs.tail.head
     def [T](xs: List[T]) third: T = xs.tail.tail.head
   }
 
   given AnyRef {
-    def [T](xs: List[T]) largest (given Ordering[T])(n: Int) =
+    def [T](xs: List[T]) largest (n: Int) with Ordering[T] =
       xs.sorted.takeRight(n)
   }
 

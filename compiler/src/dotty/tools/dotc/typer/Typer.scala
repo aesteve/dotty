@@ -174,6 +174,16 @@ class Typer extends Namer
           previous
         }
 
+      /** Recurse in outer context. If final result is same as `previous`, check that it
+       *  is new or shadowed. This order of checking is necessary since an
+       *  outer package-level definition might trump two conflicting inner
+       *  imports, so no error should be issued in that case. See i7876.scala.
+       */
+      def recurAndCheckNewOrShadowed(previous: Type, prevPrec: BindingPrec, prevCtx: Context)(given Context): Type =
+        val found = findRefRecur(previous, prevPrec, prevCtx)
+        if found eq previous then checkNewOrShadowed(found, prevPrec)
+        else found
+
       def selection(imp: ImportInfo, name: Name, checkBounds: Boolean) =
         if imp.sym.isCompleting then
           ctx.warning(i"cyclic ${imp.sym}, ignored", posd.sourcePos)
@@ -323,11 +333,11 @@ class Typer extends Namer
             else if (isPossibleImport(NamedImport) && (curImport ne outer.importInfo)) {
               val namedImp = namedImportRef(curImport)
               if (namedImp.exists)
-                findRefRecur(checkNewOrShadowed(namedImp, NamedImport), NamedImport, ctx)(outer)
+                recurAndCheckNewOrShadowed(namedImp, NamedImport, ctx)(given outer)
               else if (isPossibleImport(WildImport) && !curImport.sym.isCompleting) {
                 val wildImp = wildImportRef(curImport)
                 if (wildImp.exists)
-                  findRefRecur(checkNewOrShadowed(wildImp, WildImport), WildImport, ctx)(outer)
+                  recurAndCheckNewOrShadowed(wildImp, WildImport, ctx)(given outer)
                 else {
                   updateUnimported()
                   loop(ctx)(outer)
@@ -1089,16 +1099,20 @@ class Typer extends Namer
             pt match {
               case SAMType(sam)
               if !defn.isFunctionType(pt) && mt <:< sam =>
+                // SAMs of the form C[?] where C is a class cannot be conversion targets.
+                // The resulting class `class $anon extends C[?] {...}` would be illegal,
+                // since type arguments to `C`'s super constructor cannot be constructed.
+                def isWildcardClassSAM =
+                  !pt.classSymbol.is(Trait) && pt.argInfos.exists(_.isInstanceOf[TypeBounds])
                 val targetTpe =
-                  if (!isFullyDefined(pt, ForceDegree.all))
-                    if (pt.isRef(defn.PartialFunctionClass))
-                      // Replace the underspecified expected type by one based on the closure method type
-                      defn.PartialFunctionOf(mt.firstParamTypes.head, mt.resultType)
-                    else {
-                      ctx.error(ex"result type of lambda is an underspecified SAM type $pt", tree.sourcePos)
-                      pt
-                    }
-                  else pt
+                  if isFullyDefined(pt, ForceDegree.all) && !isWildcardClassSAM then
+                    pt
+                  else if pt.isRef(defn.PartialFunctionClass) then
+                    // Replace the underspecified expected type by one based on the closure method type
+                    defn.PartialFunctionOf(mt.firstParamTypes.head, mt.resultType)
+                  else
+                    ctx.error(ex"result type of lambda is an underspecified SAM type $pt", tree.sourcePos)
+                    pt
                 if (pt.classSymbol.isOneOf(FinalOrSealed)) {
                   val offendingFlag = pt.classSymbol.flags & FinalOrSealed
                   ctx.error(ex"lambda cannot implement $offendingFlag ${pt.classSymbol}", tree.sourcePos)
@@ -1233,7 +1247,10 @@ class Typer extends Namer
     def caseRest(implicit ctx: Context) = {
       val pat1 = checkSimpleKinded(typedType(cdef.pat)(ctx.addMode(Mode.Pattern)))
       val pat2 = indexPattern(cdef).transform(pat1)
-      val body1 = typedType(cdef.body, pt)
+      var body1 = typedType(cdef.body, pt)
+      if !body1.isType then
+        assert(ctx.reporter.errorsReported)
+        body1 = TypeTree(errorType("<error: not a type>", cdef.sourcePos))
       assignType(cpy.CaseDef(cdef)(pat2, EmptyTree, body1), pat2, body1)
     }
     caseRest(ctx.fresh.setFreshGADTBounds.setNewScope)
@@ -1528,7 +1545,7 @@ class Typer extends Namer
         var name = tree.name
         if (name == nme.WILDCARD && tree.mods.is(Given)) {
           val Typed(_, tpt): @unchecked = tree.body
-          name = desugar.inventGivenName(tpt)
+          name = desugar.inventGivenOrExtensionName(tpt)
         }
         if (name == nme.WILDCARD) body1
         else {
@@ -1548,7 +1565,13 @@ class Typer extends Namer
 
   def typedAlternative(tree: untpd.Alternative, pt: Type)(implicit ctx: Context): Alternative = {
     val nestedCtx = ctx.addMode(Mode.InPatternAlternative)
+    def ensureValueTypeOrWildcard(tree: Tree) =
+      if tree.tpe.isValueTypeOrWildcard then tree
+      else
+        assert(ctx.reporter.errorsReported)
+        tree.withType(defn.AnyType)
     val trees1 = tree.trees.mapconserve(typed(_, pt)(nestedCtx))
+      .mapconserve(ensureValueTypeOrWildcard)
     assignType(cpy.Alternative(tree)(trees1), trees1)
   }
 
@@ -1590,6 +1613,7 @@ class Typer extends Namer
       case rhs => typedExpr(rhs, tpt1.tpe.widenExpr)
     }
     val vdef1 = assignType(cpy.ValDef(vdef)(name, tpt1, rhs1), sym)
+    checkSignatureRepeatedParam(sym)
     if (sym.is(Inline, butNot = DeferredOrTermParamOrAccessor))
       checkInlineConformant(rhs1, isFinal = sym.is(Final), em"right-hand side of inline $sym")
     patchFinalVals(vdef1)
@@ -1675,7 +1699,9 @@ class Typer extends Namer
       checkThisConstrCall(rhs1)
     }
 
-    assignType(cpy.DefDef(ddef)(name, tparams1, vparamss1, tpt1, rhs1), sym).setDefTree
+    val ddef2 = assignType(cpy.DefDef(ddef)(name, tparams1, vparamss1, tpt1, rhs1), sym)
+    checkSignatureRepeatedParam(sym)
+    ddef2.setDefTree
       //todo: make sure dependent method types do not depend on implicits or by-name params
   }
 
@@ -1924,13 +1950,17 @@ class Typer extends Namer
     val annot1 = typedExpr(tree.annot, defn.AnnotationClass.typeRef)
     val arg1 = typed(tree.arg, pt)
     if (ctx.mode is Mode.Type) {
-      val result = assignType(cpy.Annotated(tree)(arg1, annot1), arg1, annot1)
-      result.tpe match {
-        case AnnotatedType(rhs, Annotation.WithBounds(bounds)) =>
-          if (!bounds.contains(rhs)) ctx.error(em"type $rhs outside bounds $bounds", tree.sourcePos)
-        case _ =>
-      }
-      result
+      if arg1.isType then
+        val result = assignType(cpy.Annotated(tree)(arg1, annot1), arg1, annot1)
+        result.tpe match {
+          case AnnotatedType(rhs, Annotation.WithBounds(bounds)) =>
+            if (!bounds.contains(rhs)) ctx.error(em"type $rhs outside bounds $bounds", tree.sourcePos)
+          case _ =>
+        }
+        result
+      else
+        assert(ctx.reporter.errorsReported)
+        TypeTree(UnspecifiedErrorType)
     }
     else {
       val arg2 = arg1 match {
@@ -2552,7 +2582,7 @@ class Typer extends Namer
     adapt(tree, pt, ctx.typerState.ownedVars)
 
   private def adapt1(tree: Tree, pt: Type, locked: TypeVars)(implicit ctx: Context): Tree = {
-    assert(pt.exists && !pt.isInstanceOf[ExprType])
+    assert(pt.exists && !pt.isInstanceOf[ExprType] || ctx.reporter.errorsReported)
     def methodStr = err.refStr(methPart(tree).tpe)
 
     def readapt(tree: Tree)(implicit ctx: Context) = adapt(tree, pt, locked)
@@ -2624,7 +2654,21 @@ class Typer extends Namer
           else
             tree
         else if (wtp.isContextualMethod)
-          adaptNoArgs(wtp)  // insert arguments implicitly
+          def isContextBoundParams = wtp.stripPoly match
+            case MethodType(EvidenceParamName(_) :: _) => true
+            case _ => false
+          if ctx.settings.migration.value && ctx.settings.strict.value
+             && isContextBoundParams
+          then // Under 3.1 and -migration, don't infer implicit arguments yet for parameters
+               // coming from context bounds. Issue a warning instead and offer a patch.
+            ctx.migrationWarning(
+              em"""Context bounds will map to context parameters.
+                  |A `with` clause is needed to pass explicit arguments to them.
+                  |This code can be rewritten automatically using -rewrite""", tree.sourcePos)
+            patch(Span(tree.span.end), ".with")
+            tree
+          else
+            adaptNoArgs(wtp)  // insert arguments implicitly
         else if (tree.symbol.isPrimaryConstructor && tree.symbol.info.firstParamTypes.isEmpty)
           readapt(tree.appliedToNone) // insert () to primary constructors
         else
@@ -2865,9 +2909,7 @@ class Typer extends Namer
               |To turn this error into a warning, pass -Xignore-scala2-macros to the compiler""".stripMargin, tree.sourcePos.startPos)
           tree
         }
-      else if (tree.tpe <:< pt) {
-        if (pt.hasAnnotation(defn.InlineParamAnnot))
-          checkInlineConformant(tree, isFinal = false, "argument to inline parameter")
+      else if (tree.tpe.widenExpr <:< pt) {
         if (ctx.typeComparer.GADTused && pt.isValueType)
           // Insert an explicit cast, so that -Ycheck in later phases succeeds.
           // I suspect, but am not 100% sure that this might affect inferred types,

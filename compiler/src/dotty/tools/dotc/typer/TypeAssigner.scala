@@ -161,7 +161,8 @@ trait TypeAssigner {
     avoid(expr.tpe, localSyms(bindings).filter(_.isTerm))
 
   def avoidPrivateLeaks(sym: Symbol)(implicit ctx: Context): Type =
-    if (!sym.isOneOf(PrivateOrSynthetic) && sym.owner.isClass) checkNoPrivateLeaks(sym)
+    if sym.owner.isClass && !sym.isOneOf(JavaOrPrivateOrSynthetic)
+    then checkNoPrivateLeaks(sym)
     else sym.info
 
   private def toRepeated(tree: Tree, from: ClassSymbol)(implicit ctx: Context): Tree =
@@ -282,6 +283,7 @@ trait TypeAssigner {
                  |Note that `$name` is treated as an infix operator in Scala 3.
                  |If you do not want that, insert a `;` or empty line in front
                  |or drop any spaces behind the operator."""
+            else if qualType.isBottomType then ""
             else
               var add = importSuggestionAddendum(
                 ViewProto(qualType.widen,
@@ -315,8 +317,12 @@ trait TypeAssigner {
   def assignType(tree: untpd.Select, qual: Tree)(implicit ctx: Context): Select = {
     def qualType = qual.tpe.widen
     def arrayElemType = {
-      val JavaArrayType(elemtp) = qualType
-      elemtp
+      qualType match {
+        case JavaArrayType(elemtp) => elemtp
+        case _ =>
+          ctx.error("Expected Array but was " + qualType.show, tree.sourcePos)
+          defn.NothingType
+      }
     }
     val p = nme.primitive
     val tp = tree.name match {

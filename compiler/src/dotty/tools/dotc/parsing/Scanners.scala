@@ -202,7 +202,8 @@ object Scanners {
     private val commentBuf = new mutable.StringBuilder
 
     private def handleMigration(keyword: Token): Token =
-      if (!isScala2CompatMode) keyword
+      if (keyword == ERASED && !ctx.settings.YerasedTerms.value) IDENTIFIER
+      else if (!isScala2CompatMode) keyword
       else if (scala3keywords.contains(keyword)) treatAsIdent()
       else keyword
 
@@ -549,6 +550,13 @@ object Scanners {
          |Previous indent : $lastWidth
          |Latest indent   : $nextWidth"""
 
+    def observeColonEOL(): Unit =
+      if token == COLON then
+        lookahead()
+        val atEOL = isAfterLineEnd
+        reset()
+        if atEOL then token = COLONEOL
+
     def observeIndented(): Unit =
       if indentSyntax && isNewLine then
         val nextWidth = indentWidth(next.offset)
@@ -574,19 +582,25 @@ object Scanners {
         insert(OUTDENT, offset)
       case _ =>
 
-    /** - Join CASE + CLASS => CASECLASS, CASE + OBJECT => CASEOBJECT, SEMI + ELSE => ELSE, COLON + <EOL> => COLONEOL
+    def lookahead() = {
+      prev.copyFrom(this)
+      lastOffset = lastCharOffset
+      fetchToken()
+    }
+
+    def reset() = {
+      next.copyFrom(this)
+      this.copyFrom(prev)
+    }
+
+    /** - Join CASE + CLASS => CASECLASS,
+     *    CASE + OBJECT => CASEOBJECT,
+     *    SEMI + ELSE => ELSE,
+     *    COLON + <EOL> => COLONEOL
+     *    DOT + WITH => DOTWITH
      *  - Insert missing OUTDENTs at EOF
      */
     def postProcessToken(): Unit = {
-      def lookahead() = {
-        prev.copyFrom(this)
-        lastOffset = lastCharOffset
-        fetchToken()
-      }
-      def reset() = {
-        next.copyFrom(this)
-        this.copyFrom(prev)
-      }
       def fuse(tok: Int) = {
         token = tok
         offset = prev.offset
@@ -609,11 +623,12 @@ object Scanners {
           } else if (token == EOF) { // e.g. when the REPL is parsing "val List(x, y, _*,"
             /* skip the trailing comma */
           } else reset()
-        case COLON =>
+        case DOT =>
           lookahead()
-          val atEOL = isAfterLineEnd
-          reset()
-          if (colonSyntax && atEOL) token = COLONEOL
+          if token == WITH then fuse(DOTWITH)
+          else reset()
+        case COLON =>
+          if colonSyntax then observeColonEOL()
         case EOF | RBRACE =>
           currentRegion match {
             case r: Indented if !r.isOutermost =>
@@ -715,7 +730,7 @@ object Scanners {
                *  there a realistic situation where one would need it?
                */
               if (isDigit(ch) || (isNumberSeparator(ch) && isDigit(lookaheadChar())))
-                error("Non-zero numbers may not have a leading zero.")
+                error("Numbers may not have a leading zero.")
               base = 10
             }
             getNumber()
@@ -1016,6 +1031,7 @@ object Scanners {
 
     def isNewLine = token == NEWLINE || token == NEWLINES
     def isIdent = token == IDENTIFIER || token == BACKQUOTED_IDENT
+    def isIdent(name: Name) = token == IDENTIFIER && this.name == name
 
     def isNestedStart = token == LBRACE || token == INDENT
     def isNestedEnd = token == RBRACE || token == OUTDENT
@@ -1293,8 +1309,8 @@ object Scanners {
 
     override def toString: String =
       showTokenDetailed(token) + {
-        if identifierTokens.contains(token) then name
-        else if literalTokens.contains(token) then strVal
+        if identifierTokens.contains(token) then s" $name"
+        else if literalTokens.contains(token) then s" $strVal"
         else ""
       }
 

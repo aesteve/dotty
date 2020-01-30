@@ -2,7 +2,7 @@ package dotty.tools.dotc
 package transform
 
 import java.io.{PrintWriter, StringWriter}
-import java.lang.reflect.{InvocationTargetException, Method}
+import java.lang.reflect.{InvocationTargetException, Method => JLRMethod}
 
 import dotty.tools.dotc.ast.tpd
 import dotty.tools.dotc.ast.Trees._
@@ -37,18 +37,24 @@ object Splicer {
    *
    *  See: `Staging`
    */
-  def splice(tree: Tree, pos: SourcePosition, classLoader: ClassLoader)(implicit ctx: Context): Tree = tree match {
+  def splice(tree: Tree, pos: SourcePosition, classLoader: ClassLoader)(given ctx: Context): Tree = tree match {
     case Quoted(quotedTree) => quotedTree
     case _ =>
       val interpreter = new Interpreter(pos, classLoader)
+      val macroOwner = ctx.newSymbol(ctx.owner, NameKinds.UniqueName.fresh(nme.MACROkw), Synthetic, defn.AnyType, coord = tree.span)
       try {
+        given Context = ctx.withOwner(macroOwner)
         // Some parts of the macro are evaluated during the unpickling performed in quotedExprToTree
         val interpretedExpr = interpreter.interpret[scala.quoted.QuoteContext => scala.quoted.Expr[Any]](tree)
-        interpretedExpr.fold(tree)(macroClosure => PickledQuotes.quotedExprToTree(macroClosure(QuoteContext())))
+        val interpretedTree = interpretedExpr.fold(tree)(macroClosure => PickledQuotes.quotedExprToTree(macroClosure(QuoteContext())))
+        checkEscapedVariables(interpretedTree, macroOwner).changeOwner(macroOwner, ctx.owner)
       }
       catch {
         case ex: CompilationUnit.SuspendException =>
           throw ex
+        case ex: scala.quoted.StopQuotedContext if ctx.reporter.hasErrors =>
+           // errors have been emitted
+          EmptyTree
         case ex: StopInterpretation =>
           ctx.error(ex.msg, ex.pos)
           EmptyTree
@@ -62,6 +68,43 @@ object Splicer {
           EmptyTree
       }
   }
+
+  /** Checks that no symbol that whas generated within the macro expansion has an out of scope reference */
+  def checkEscapedVariables(tree: Tree, expansionOwner: Symbol)(given ctx: Context): tree.type =
+    new TreeTraverser {
+      private[this] var locals = Set.empty[Symbol]
+      private def markSymbol(sym: Symbol)(implicit ctx: Context): Unit =
+          locals = locals + sym
+      private def markDef(tree: Tree)(implicit ctx: Context): Unit = tree match {
+        case tree: DefTree => markSymbol(tree.symbol)
+        case _ =>
+      }
+      def traverse(tree: Tree)(given ctx: Context): Unit =
+        def traverseOver(lastEntered: Set[Symbol]) =
+          try traverseChildren(tree)
+          finally locals = lastEntered
+        tree match
+          case tree: Ident if isEscapedVariable(tree.symbol) =>
+            val sym = tree.symbol
+            ctx.error(em"While expanding a macro, a reference to $sym was used outside the scope where it was defined", tree.sourcePos)
+          case Block(stats, _) =>
+            val last = locals
+            stats.foreach(markDef)
+            traverseOver(last)
+          case CaseDef(pat, guard, body) =>
+            val last = locals
+            tpd.patVars(pat).foreach(markSymbol)
+            traverseOver(last)
+          case _ =>
+            markDef(tree)
+            traverseChildren(tree)
+      private def isEscapedVariable(sym: Symbol)(given ctx: Context): Boolean =
+        sym.exists && !sym.is(Package)
+        && sym.owner.ownersIterator.contains(expansionOwner) // symbol was generated within the macro expansion
+        && !locals.contains(sym) // symbol is not in current scope
+    }.traverse(tree)
+    tree
+
 
   /** Check that the Tree can be spliced. `${'{xyz}}` becomes `xyz`
     *  and for `$xyz` the tree of `xyz` is interpreted for which the
@@ -194,10 +237,13 @@ object Splicer {
           interpretNew(fn.symbol, args.flatten.map(interpretTree))
         else if (fn.symbol.is(Module))
           interpretModuleAccess(fn.symbol)
-        else if (fn.symbol.isStatic) {
+        else if (fn.symbol.is(Method) && fn.symbol.isStatic) {
           val staticMethodCall = interpretedStaticMethodCall(fn.symbol.owner, fn.symbol)
           staticMethodCall(args.flatten.map(interpretTree))
         }
+        else if (fn.symbol.isStatic)
+          assert(args.isEmpty)
+          interpretedStaticFieldAccess(fn.symbol)
         else if (fn.qualifier.symbol.is(Module) && fn.qualifier.symbol.isStatic)
           if (fn.name == nme.asInstanceOfPM)
             interpretModuleAccess(fn.qualifier.symbol)
@@ -277,6 +323,12 @@ object Splicer {
       (args: List[Object]) => stopIfRuntimeException(method.invoke(inst, args: _*), method)
     }
 
+    private def interpretedStaticFieldAccess(sym: Symbol)(implicit env: Env): Object = {
+      val clazz = loadClass(sym.owner.fullName.toString)
+      val field = clazz.getField(sym.name.toString)
+      field.get(null)
+    }
+
     private def interpretModuleAccess(fn: Symbol)(implicit env: Env): Object =
       loadModule(fn.moduleClass)
 
@@ -319,7 +371,7 @@ object Splicer {
           throw new StopInterpretation(msg, pos)
       }
 
-    private def getMethod(clazz: Class[?], name: Name, paramClasses: List[Class[?]]): Method =
+    private def getMethod(clazz: Class[?], name: Name, paramClasses: List[Class[?]]): JLRMethod =
       try clazz.getMethod(name.toString, paramClasses: _*)
       catch {
         case _: NoSuchMethodException =>
@@ -327,7 +379,7 @@ object Splicer {
           throw new StopInterpretation(msg, pos)
       }
 
-    private def stopIfRuntimeException[T](thunk: => T, method: Method): T =
+    private def stopIfRuntimeException[T](thunk: => T, method: JLRMethod): T =
       try thunk
       catch {
         case ex: RuntimeException =>
@@ -340,6 +392,8 @@ object Splicer {
           throw new StopInterpretation(sw.toString, pos)
         case ex: InvocationTargetException =>
           ex.getTargetException match {
+            case ex: scala.quoted.StopQuotedContext =>
+              throw ex
             case MissingClassDefinedInCurrentRun(sym) =>
               if (ctx.settings.XprintSuspension.value)
                 ctx.echo(i"suspension triggered by a dependency on $sym", pos)

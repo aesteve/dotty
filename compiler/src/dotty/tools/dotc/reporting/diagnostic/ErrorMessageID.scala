@@ -148,7 +148,11 @@ enum ErrorMessageID extends java.lang.Enum[ErrorMessageID] {
     IllegalSuperAccessorID,
     TraitParameterUsedAsParentPrefixID,
     UnknownNamedEnclosingClassOrObjectID,
-    IllegalCyclicTypeReferenceID
+    IllegalCyclicTypeReferenceID,
+    MissingTypeParameterInTypeAppID,
+    ImplicitTypesCanOnlyBeFunctionTypesID,
+    ErasedTypesCanOnlyBeFunctionTypesID,
+    CaseClassMissingNonImplicitParamListID
 
   def errorNumber = ordinal - 2
 }

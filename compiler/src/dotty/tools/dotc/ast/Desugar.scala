@@ -222,7 +222,8 @@ object desugar {
     val epbuf = ListBuffer[ValDef]()
     def desugarContextBounds(rhs: Tree): Tree = rhs match {
       case ContextBounds(tbounds, cxbounds) =>
-        epbuf ++= makeImplicitParameters(cxbounds, Implicit, forPrimaryConstructor = isPrimaryConstructor)
+        val iflag = if ctx.settings.strict.value then Given else Implicit
+        epbuf ++= makeImplicitParameters(cxbounds, iflag, forPrimaryConstructor = isPrimaryConstructor)
         tbounds
       case LambdaTypeTree(tparams, body) =>
         cpy.LambdaTypeTree(rhs)(tparams, desugarContextBounds(body))
@@ -459,7 +460,7 @@ object desugar {
         ListOfNil
       }
       else if (isCaseClass && originalVparamss.head.exists(_.mods.isOneOf(GivenOrImplicit))) {
-        ctx.error("Case classes should have a non-implicit parameter list", namePos)
+        ctx.error(CaseClassMissingNonImplicitParamList(cdef), namePos)
         ListOfNil
       }
       else originalVparamss.nestedMap(toDefParam(_, keepAnnotations = false))
@@ -473,7 +474,7 @@ object desugar {
           decompose(
             defDef(
               addEvidenceParams(
-                cpy.DefDef(ddef)(tparams = constrTparams),
+                cpy.DefDef(ddef)(tparams = constrTparams ++ ddef.tparams),
                 evidenceParams(constr1).map(toDefParam(_, keepAnnotations = false)))))
         case stat =>
           stat
@@ -683,15 +684,28 @@ object desugar {
           val mods = constr1.mods
           mods.is(Private) || (!mods.is(Protected) && mods.hasPrivateWithin)
         }
+ 
+        /** Does one of the parameter's types (in the first param clause)
+         *  mention a preceding parameter?
+         */
+        def isParamDependent = constrVparamss match
+          case vparams :: _ =>
+            val paramNames = vparams.map(_.name).toSet
+            vparams.exists(_.tpt.existsSubTree {
+              case Ident(name: TermName) => paramNames.contains(name)
+              case _ => false
+            })
+          case _ => false
 
         val companionParent =
-          if (constrTparams.nonEmpty ||
-              constrVparamss.length > 1 ||
-              mods.is(Abstract) ||
-              restrictedAccess ||
-              isEnumCase) anyRef
+          if constrTparams.nonEmpty
+             || constrVparamss.length > 1
+             || mods.is(Abstract)
+             || restrictedAccess
+             || isParamDependent
+             || isEnumCase
+          then anyRef
           else
-            // todo: also use anyRef if constructor has a dependent method type (or rule that out)!
             constrVparamss.foldRight(classTypeRef)((vparams, restpe) => Function(vparams map (_.tpt), restpe))
         def widenedCreatorExpr =
           widenDefs.foldLeft(creatorExpr)((rhs, meth) => Apply(Ident(meth.name), rhs :: Nil))
@@ -715,7 +729,8 @@ object desugar {
           val methName = if (hasRepeatedParam) nme.unapplySeq else nme.unapply
           val unapplyParam = makeSyntheticParameter(tpt = classTypeRef)
           val unapplyRHS = if (arity == 0) Literal(Constant(true)) else Ident(unapplyParam.name)
-          DefDef(methName, derivedTparams, (unapplyParam :: Nil) :: Nil, TypeTree(), unapplyRHS)
+          val unapplyResTp = if (arity == 0) Literal(Constant(true)) else TypeTree()
+          DefDef(methName, derivedTparams, (unapplyParam :: Nil) :: Nil, unapplyResTp, unapplyRHS)
             .withMods(synthetic)
         }
         companionDefs(companionParent, applyMeths ::: unapplyMeth :: companionMembers)
@@ -723,10 +738,7 @@ object desugar {
       else if (companionMembers.nonEmpty || companionDerived.nonEmpty || isEnum)
         companionDefs(anyRef, companionMembers)
       else if (isValueClass)
-        impl.constr.vparamss match {
-          case (_ :: Nil) :: _ => companionDefs(anyRef, Nil)
-          case _ => Nil // error will be emitted in typer
-        }
+        companionDefs(anyRef, Nil)
       else Nil
 
     enumCompanionRef match {
@@ -957,10 +969,6 @@ object desugar {
     else tree
   }
 
-  /** Invent a name for an anonympus given of type or template `impl`. */
-  def inventGivenName(impl: Tree)(implicit ctx: Context): SimpleName =
-    s"given_${inventName(impl)}".toTermName.asSimpleName
-
   /** The normalized name of `mdef`. This means
    *   1. Check that the name does not redefine a Scala core class.
    *      If it does redefine, issue an error and return a mangled name instead of the original one.
@@ -968,7 +976,7 @@ object desugar {
    */
   def normalizeName(mdef: MemberDef, impl: Tree)(implicit ctx: Context): Name = {
     var name = mdef.name
-    if (name.isEmpty) name = name.likeSpaced(inventGivenName(impl))
+    if (name.isEmpty) name = name.likeSpaced(inventGivenOrExtensionName(impl))
     if (ctx.owner == defn.ScalaPackageClass && defn.reservedScalaClassNames.contains(name.toTypeName)) {
       def kind = if (name.isTypeName) "class" else "object"
       ctx.error(em"illegal redefinition of standard $kind $name", mdef.sourcePos)
@@ -977,27 +985,26 @@ object desugar {
     name
   }
 
-  /** Invent a name for an anonymous instance with template `impl`.
-   */
-  private def inventName(impl: Tree)(implicit ctx: Context): String = impl match {
-    case impl: Template =>
-      if (impl.parents.isEmpty)
-        impl.body.find {
-          case dd: DefDef if dd.mods.is(Extension) => true
-          case _ => false
-        }
-        match {
-          case Some(DefDef(name, _, (vparam :: _) :: _, _, _)) =>
-            s"${name}_of_${inventTypeName(vparam.tpt)}"
-          case _ =>
-            ctx.error(i"anonymous instance must implement a type or have at least one extension method", impl.sourcePos)
-            nme.ERROR.toString
-        }
-      else
-        impl.parents.map(inventTypeName(_)).mkString("_")
-    case impl: Tree =>
-      inventTypeName(impl)
-  }
+  /** Invent a name for an anonympus given or extension of type or template `impl`. */
+  def inventGivenOrExtensionName(impl: Tree)(given ctx: Context): SimpleName =
+    val str = impl match
+      case impl: Template =>
+        if impl.parents.isEmpty then
+          impl.body.find {
+            case dd: DefDef if dd.mods.is(Extension) => true
+            case _ => false
+          }
+          match
+            case Some(DefDef(name, _, (vparam :: _) :: _, _, _)) =>
+              s"extension_${name}_${inventTypeName(vparam.tpt)}"
+            case _ =>
+              ctx.error(i"anonymous instance must implement a type or have at least one extension method", impl.sourcePos)
+              nme.ERROR.toString
+        else
+          impl.parents.map(inventTypeName(_)).mkString("given_", "_", "")
+      case impl: Tree =>
+        "given_" ++ inventTypeName(impl)
+    str.toTermName.asSimpleName
 
   private class NameExtractor(followArgs: Boolean) extends UntypedTreeAccumulator[String] {
     private def extractArgs(args: List[Tree])(implicit ctx: Context): String =

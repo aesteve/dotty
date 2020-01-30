@@ -1,15 +1,15 @@
 type Tr[-I, +O, +A] = I => (O, A)
 
-trait NetApi with
+trait NetApi:
   type Comp
 
-trait NetDB extends NetApi with
+trait NetDB extends NetApi:
   class Comp
 
 trait NetHelper extends NetApi
 
 def compQ(name: => String)
-    : (given n: NetApi) => Tr[Nothing, n.Comp, n.Comp] = ???
+    : (n: NetApi) ?=> Tr[Nothing, n.Comp, n.Comp] = ???
 
 object net extends NetDB with NetHelper
 import net._

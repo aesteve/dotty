@@ -3,6 +3,9 @@ layout: doc-page
 title: Relationship with Scala 2 Implicits
 ---
 
+**Note** The syntax described in this section is currently under revision.
+[Here is the new version which will be implemented in Dotty 0.22](./relationship-implicits-new.html).
+
 Many, but not all, of the new contextual abstraction features in Scala 3 can be mapped to Scala 2's implicits. This page gives a rundown on the relationships between new and old features.
 
 ## Simulating Contextual Abstraction with Implicits
@@ -21,7 +24,7 @@ Given instances can be mapped to combinations of implicit objects, classes and i
     ```
  2. Parameterized given instances are mapped to combinations of classes and implicit methods. E.g.,
     ```scala
-      given listOrd[T]: (ord: Ord[T]) => Ord[List[T]] { ... }
+      given listOrd[T](given ord: Ord[T]): Ord[List[T]] { ... }
     ```
     maps to
     ```scala
@@ -61,15 +64,23 @@ The synthesized type names are formed from
 Tuples are treated as transparent, i.e. a type `F[(X, Y)]` would get the synthesized name
 `F_X_Y`. Directly implemented function types `A => B` are represented as `A_to_B`. Function types used as arguments to other type constructors are represented as `Function`.
 
-Anonymous given instances that define extension methods
-get their name from the name of the first extension method and the toplevel type
-constructor of its first parameter. For example, the given instance
+### Anonymous Collective Extensions
+
+Anonymous collective extensions also get compiler synthesized names, which are formed from
+
+ - the prefix `extension_`
+ - the name of the first defined extension method
+ - the simple name of the first parameter type of this extension method
+ - the simple name(s) of the toplevel argument type constructors to this type.
+
+For example, the extension
 ```scala
-given [T] (xs: List[T]) extended with {
+extension on [T] (xs: List[T]) {
   def second = ...
 }
 ```
-gets the synthesized name `given_second_of_List_T`.
+gets the synthesized name `extension_second_List_T`.
+
 
 ### Given Clauses
 
@@ -94,17 +105,15 @@ asked for.
 
 ### Context Bounds
 
-Context bounds are the same in both language versions. They expand to the respective forms of implicit parameters.
-
-**Note:** To ease migration, context bounds in Dotty map for a limited time to old-style implicit parameters for which arguments can be passed either with `given` or
-with a normal application. Once old-style implicits are deprecated, context bounds
-will map to given clauses instead.
+Context bounds are the same in both language versions.
+They expand to `implicit` parameters in Scala 2 and also in Scala 3.0.
+They will expand to context parameters from Scala 3.1 on.
 
 ### Extension Methods
 
 Extension methods have no direct counterpart in Scala 2, but they can be simulated with implicit classes. For instance, the extension method
 ```scala
-def (c: Circle) circumference: Double = c.radius * math.Pi * 2
+def (c: Circle).circumference: Double = c.radius * math.Pi * 2
 ```
 could be simulated to some degree by
 ```scala

@@ -8,7 +8,7 @@ import dotty.tools.tasty.{ TastyReader, TastyHeaderUnpickler }
 import Contexts._, Symbols._, Types._, Names._, StdNames._, NameOps._, Scopes._, Decorators._
 import SymDenotations._, unpickleScala2.Scala2Unpickler._, Constants._, Annotations._, util.Spans._
 import NameKinds.DefaultGetterName
-import ast.tpd._
+import ast.tpd._, util._
 import java.io.{ ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, IOException }
 
 import java.lang.Integer.toHexString
@@ -200,12 +200,10 @@ class ClassfileParser(
         sym.markAbsent()
       }
 
-    // eager load java enum definitions for exhaustivity check of pattern match
+    // eager load enum definitions for exhaustivity check of pattern match
     if (isEnum) {
       instanceScope.toList.map(_.ensureCompleted())
       staticScope.toList.map(_.ensureCompleted())
-      classRoot.setFlag(Flags.JavaEnumTrait)
-      moduleRoot.setFlag(Flags.JavaEnumTrait)
     }
 
     result
@@ -273,9 +271,14 @@ class ClassfileParser(
          *  and make constructor type polymorphic in the type parameters of the class
          */
         def normalizeConstructorInfo() = {
-          val mt @ MethodType(paramNames) = denot.info
           val rt = classRoot.typeRef appliedTo (classRoot.typeParams map (_.typeRef))
-          denot.info = mt.derivedLambdaType(paramNames, mt.paramInfos, rt)
+
+          def resultType(tpe: Type): Type = tpe match {
+            case mt @ MethodType(paramNames) => mt.derivedLambdaType(paramNames, mt.paramInfos, rt)
+            case pt : PolyType => pt.derivedLambdaType(pt.paramNames, pt.paramInfos, resultType(pt.resType))
+          }
+
+          denot.info = resultType(denot.info)
           addConstructorTypeParams(denot)
         }
 
@@ -747,7 +750,7 @@ class ClassfileParser(
 
       def unpickleTASTY(bytes: Array[Byte]): Some[Embedded]  = {
         val unpickler = new tasty.DottyUnpickler(bytes)
-        unpickler.enter(roots = Set(classRoot, moduleRoot, moduleRoot.sourceModule))
+        unpickler.enter(roots = Set(classRoot, moduleRoot, moduleRoot.sourceModule))(ctx.withSource(util.NoSource))
         Some(unpickler)
       }
 
@@ -774,35 +777,42 @@ class ClassfileParser(
         val attrLen = in.nextInt
         val bytes = in.nextBytes(attrLen)
         if (attrLen == 16) { // A tasty attribute with that has only a UUID (16 bytes) implies the existence of the .tasty file
-          val tastyBytes: Array[Byte] = classfile.underlyingSource match { // TODO: simplify when #3552 is fixed
-            case None =>
-              ctx.error("Could not load TASTY from .tasty for virtual file " + classfile)
-              Array.empty
-            case Some(jar: ZipArchive) => // We are in a jar
-              val cl = new URLClassLoader(Array(jar.jpath.toUri.toURL), /*parent =*/ null)
-              val path = classfile.path.stripSuffix(".class") + ".tasty"
-              val stream = cl.getResourceAsStream(path)
-              if (stream != null) {
-                val tastyOutStream = new ByteArrayOutputStream()
-                val buffer = new Array[Byte](1024)
-                var read = stream.read(buffer, 0, buffer.length)
-                while (read != -1) {
-                  tastyOutStream.write(buffer, 0, read)
-                  read = stream.read(buffer, 0, buffer.length)
+          val tastyBytes: Array[Byte] = classfile match { // TODO: simplify when #3552 is fixed
+            case classfile: io.ZipArchive#Entry => // We are in a jar
+              val path = classfile.parent.lookupName(
+                classfile.name.stripSuffix(".class") + ".tasty", directory = false
+              )
+              if (path != null) {
+                val stream = path.input
+                try {
+                  val tastyOutStream = new ByteArrayOutputStream()
+                  val buffer = new Array[Byte](1024)
+                  var read = stream.read(buffer, 0, buffer.length)
+                  while (read != -1) {
+                    tastyOutStream.write(buffer, 0, read)
+                    read = stream.read(buffer, 0, buffer.length)
+                  }
+                  tastyOutStream.flush()
+                  tastyOutStream.toByteArray
+                } finally {
+                  stream.close()
                 }
-                tastyOutStream.flush()
-                tastyOutStream.toByteArray
               }
               else {
-                ctx.error(s"Could not find $path in $jar")
+                ctx.error(s"Could not find $path in ${classfile.underlyingSource}")
                 Array.empty
               }
             case _ =>
-              val plainFile = new PlainFile(io.File(classfile.jpath).changeExtension("tasty"))
-              if (plainFile.exists) plainFile.toByteArray
-              else {
-                ctx.error("Could not find " + plainFile)
+              if (classfile.jpath == null) {
+                ctx.error("Could not load TASTY from .tasty for virtual file " + classfile)
                 Array.empty
+              } else {
+                val plainFile = new PlainFile(io.File(classfile.jpath).changeExtension("tasty"))
+                if (plainFile.exists) plainFile.toByteArray
+                else {
+                  ctx.error("Could not find " + plainFile)
+                  Array.empty
+                }
               }
           }
           if (tastyBytes.nonEmpty) {

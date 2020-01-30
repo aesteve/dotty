@@ -1,5 +1,5 @@
 import scala.quoted._
-import scala.quoted.autolift.given
+import scala.quoted.autolift.{given _}
 
 import scala.language.implicitConversions
 
@@ -9,11 +9,11 @@ object XmlQuote {
 
   implicit object SCOps {
     inline def (inline ctx: StringContext) xml (args: => Any*): Xml =
-      ${XmlQuote.impl(ctx, 'args)}
+      ${XmlQuote.impl('ctx, 'args)}
   }
 
-  def impl(receiver: StringContext, args: Expr[Seq[Any]])(given QuoteContext): Expr[Xml] = {
-    val string = receiver.parts.mkString("??")
+  def impl(receiver: Expr[StringContext], args: Expr[Seq[Any]]) with QuoteContext : Expr[Xml] = {
+    val string = receiver.value.parts.mkString("??")
     '{new Xml(${string}, $args.toList)}
   }
 }

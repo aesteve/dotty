@@ -371,12 +371,16 @@ class TypeApplications(val self: Type) extends AnyVal {
                   // just eta-reduction (ignoring variance annotations).
                   // See i2201*.scala for examples where more aggressive
                   // reduction would break type inference.
-                  dealiased.paramRefs == dealiasedArgs
+                  dealiased.paramRefs == dealiasedArgs ||
+                  defn.isCompiletimeAppliedType(tyconBody.typeSymbol)
                 case _ => false
               }
             }
             if ((dealiased eq stripped) || followAlias)
-              try dealiased.instantiate(args)
+              try {
+                val instantiated = dealiased.instantiate(args)
+                if (followAlias) instantiated.normalized else instantiated
+              }
               catch { case ex: IndexOutOfBoundsException => AppliedType(self, args) }
             else AppliedType(self, args)
           }
@@ -451,7 +455,10 @@ class TypeApplications(val self: Type) extends AnyVal {
       self.derivedExprType(tp.translateParameterized(from, to))
     case _ =>
       if (self.derivesFrom(from)) {
-        val arg = self.baseType(from).argInfos.head
+        def elemType(tp: Type): Type = tp match
+          case tp: AndOrType => tp.derivedAndOrType(elemType(tp.tp1), elemType(tp.tp2))
+          case _ => tp.baseType(from).argInfos.head
+        val arg = elemType(self)
         val arg1 = if (wildcardArg) TypeBounds.upper(arg) else arg
         to.typeRef.appliedTo(arg1)
       }

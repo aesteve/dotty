@@ -148,9 +148,17 @@ trait ImportSuggestions with
       System.currentTimeMillis < deadLine
       && {
         given Context = ctx.fresh.setExploreTyperState()
-        pt match
-          case pt: ViewProto => pt.isMatchedBy(ref)
-          case _ => normalize(ref, pt) <:< pt
+        def test(pt: Type): Boolean = pt match
+          case ViewProto(argType, OrType(rt1, rt2)) =>
+            // Union types do not constrain results, since comparison with a union
+            // type on the right might lose information. See ProtoTypes.disregardProto.
+            // To regain precision, test both sides separately.
+            test(ViewProto(argType, rt1)) || test(ViewProto(argType, rt2))
+          case pt: ViewProto =>
+            pt.isMatchedBy(ref)
+          case _ =>
+            normalize(ref, pt) <:< pt
+        test(pt)
       }
 
     /** Test whether a full given term can be synthesized that matches
@@ -178,8 +186,11 @@ trait ImportSuggestions with
           typedImplicit(candidate, expectedType, argument, span)(
             given ctx.fresh.setExploreTyperState()).isSuccess
         finally
-          task.cancel()
-          ctx.run.isCancelled = false
+          if task.cancel() then // timer task has not run yet
+            assert(!ctx.run.isCancelled)
+          else
+            while !ctx.run.isCancelled do () // wait until timer task has run to completion
+            ctx.run.isCancelled = false
       }
     end deepTest
 
